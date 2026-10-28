@@ -322,190 +322,211 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   Widget build(BuildContext context) {
     final caption = message.data['caption'] as String? ?? '';
     final upload = widget.controller.uploadProgress[message.id];
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 280),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: busy || pending ? null : open,
-            borderRadius: BorderRadius.circular(10),
-            child: kind == 'image' || kind == 'video'
-                ? preview()
-                : Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (kind == 'voice')
-                          StreamBuilder<PlayerState>(
-                            stream: player!.playerStateStream,
-                            builder: (context, snapshot) => Icon(
-                              snapshot.data?.playing == true &&
-                                      snapshot.data?.processingState !=
-                                          ProcessingState.completed
-                                  ? Icons.pause_circle_filled
-                                  : Icons.play_circle_fill,
-                              size: 34,
+    final mine = message.senderId == widget.controller.me?.id;
+    final textColor = mine
+        ? Colors.white
+        : Theme.of(context).colorScheme.onSurface;
+    return DefaultTextStyle.merge(
+      style: TextStyle(color: textColor),
+      child: IconTheme(
+        data: IconThemeData(color: textColor),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 280),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InkWell(
+                onTap: busy || pending ? null : open,
+                borderRadius: BorderRadius.circular(10),
+                child: kind == 'image' || kind == 'video'
+                    ? preview()
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (kind == 'voice')
+                              StreamBuilder<PlayerState>(
+                                stream: player!.playerStateStream,
+                                builder: (context, snapshot) => Icon(
+                                  snapshot.data?.playing == true &&
+                                          snapshot.data?.processingState !=
+                                              ProcessingState.completed
+                                      ? Icons.pause_circle_filled
+                                      : Icons.play_circle_fill,
+                                  size: 34,
+                                ),
+                              )
+                            else
+                              const Icon(Icons.description_outlined, size: 32),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    kind == 'voice'
+                                        ? 'Pesan suara'
+                                        : message.data['name'] ?? 'Dokumen',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  Text(
+                                    '${((message.data['size'] as num? ?? 0) / 1024).round()} KB · ${mime.split('/').last.toUpperCase()}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                ],
+                              ),
                             ),
-                          )
-                        else
-                          const Icon(Icons.description_outlined, size: 32),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                kind == 'voice'
-                                    ? 'Pesan suara'
-                                    : message.data['name'] ?? 'Dokumen',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
+                            if (kind == 'document' &&
+                                !pending &&
+                                message.delivery != Delivery.queued &&
+                                message.delivery != Delivery.failed)
+                              IconButton(
+                                tooltip: 'Simpan ke Download',
+                                onPressed: saving ? null : save,
+                                icon: Icon(
+                                  saving ? Icons.hourglass_top : Icons.save_alt,
+                                  size: 19,
+                                  color: textColor,
                                 ),
                               ),
-                              Text(
-                                '${((message.data['size'] as num? ?? 0) / 1024).round()} KB · ${mime.split('/').last.toUpperCase()}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 11),
+                            if (kind == 'document' && !pending)
+                              PopupMenuButton<String>(
+                                tooltip: 'Lokasi penyimpanan',
+                                icon: Icon(
+                                  Icons.more_vert,
+                                  size: 18,
+                                  color: textColor,
+                                ),
+                                onSelected: (_) => save(choose: true),
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem(
+                                    value: 'save-as',
+                                    child: Text('Simpan sebagai…'),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                          ],
                         ),
-                        if (kind == 'document' &&
-                            !pending &&
-                            message.delivery != Delivery.queued &&
-                            message.delivery != Delivery.failed)
-                          IconButton(
-                            tooltip: 'Simpan ke Download',
-                            onPressed: saving ? null : save,
-                            icon: Icon(
-                              saving ? Icons.hourglass_top : Icons.save_alt,
-                              size: 19,
-                            ),
+                      ),
+              ),
+              if (caption.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(caption),
+                ),
+              if (error != null)
+                Text(error!, style: const TextStyle(fontSize: 11)),
+              if (busy || pending)
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LinearProgressIndicator(
+                            value: pending
+                                ? upload
+                                : progress == 0
+                                ? null
+                                : progress,
                           ),
-                        if (kind == 'document' && !pending)
-                          PopupMenuButton<String>(
-                            tooltip: 'Lokasi penyimpanan',
-                            icon: const Icon(Icons.more_vert, size: 18),
-                            onSelected: (_) => save(choose: true),
-                            itemBuilder: (_) => [
-                              const PopupMenuItem(
-                                value: 'save-as',
-                                child: Text('Simpan sebagai…'),
-                              ),
-                            ],
+                          const SizedBox(height: 4),
+                          Text(
+                            pending
+                                ? (upload == null
+                                      ? 'Menunggu upload…'
+                                      : 'Mengunggah ${(upload * 100).round()}%')
+                                : progress >= 1
+                                ? 'Memverifikasi file…'
+                                : 'Mengunduh ${(progress * 100).round()}%',
+                            style: const TextStyle(fontSize: 11),
                           ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
+                    IconButton(
+                      tooltip: 'Batalkan transfer',
+                      onPressed: () => pending
+                          ? widget.controller.cancelAttachment(message.id)
+                          : transfer?.cancel(),
+                      icon: const Icon(Icons.close, size: 18),
+                    ),
+                  ],
+                )
+              else
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 4,
+                  children: [
+                    if (kind == 'voice' && audioReady)
+                      TextButton(
+                        style: TextButton.styleFrom(foregroundColor: textColor),
+                        onPressed: () async {
+                          speed = speed == 1
+                              ? 1.5
+                              : speed == 1.5
+                              ? 2
+                              : 1;
+                          await player!.setSpeed(speed);
+                          if (mounted) setState(() {});
+                        },
+                        child: Text('${speed}x'),
+                      ),
+                    if (message.delivery == Delivery.failed)
+                      TextButton.icon(
+                        style: TextButton.styleFrom(foregroundColor: textColor),
+                        onPressed: () =>
+                            widget.controller.retryMessage(message.id),
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('Coba lagi'),
+                      ),
+                    if (kind == 'voice' &&
+                        message.delivery != Delivery.queued &&
+                        message.delivery != Delivery.failed)
+                      IconButton(
+                        tooltip: kind == 'image' || kind == 'video'
+                            ? 'Simpan ke Galeri'
+                            : 'Simpan ke Download',
+                        onPressed: saving ? null : save,
+                        icon: Icon(
+                          saving ? Icons.hourglass_top : Icons.save_alt,
+                          size: 19,
+                          color: textColor,
+                        ),
+                      ),
+                  ],
+                ),
+              if (kind == 'voice' && audioReady)
+                StreamBuilder<Duration>(
+                  stream: player!.positionStream,
+                  builder: (context, snapshot) {
+                    final max =
+                        (player!.duration?.inMilliseconds.toDouble() ?? 1)
+                            .clamp(1.0, double.infinity);
+                    return Slider(
+                      activeColor: mine ? Colors.white : null,
+                      inactiveColor: mine ? Colors.white24 : null,
+                      max: max,
+                      value: (snapshot.data?.inMilliseconds.toDouble() ?? 0)
+                          .clamp(0, max),
+                      semanticFormatterCallback: (v) =>
+                          '${(v / 1000).round()} detik',
+                      onChanged: (v) =>
+                          player!.seek(Duration(milliseconds: v.round())),
+                    );
+                  },
+                ),
+            ],
           ),
-          if (caption.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(caption),
-            ),
-          if (error != null) Text(error!, style: const TextStyle(fontSize: 11)),
-          if (busy || pending)
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      LinearProgressIndicator(
-                        value: pending
-                            ? upload
-                            : progress == 0
-                            ? null
-                            : progress,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        pending
-                            ? (upload == null
-                                  ? 'Menunggu upload…'
-                                  : 'Mengunggah ${(upload * 100).round()}%')
-                            : progress >= 1
-                            ? 'Memverifikasi file…'
-                            : 'Mengunduh ${(progress * 100).round()}%',
-                        style: const TextStyle(fontSize: 11),
-                      ),
-                    ],
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Batalkan transfer',
-                  onPressed: () => pending
-                      ? widget.controller.cancelAttachment(message.id)
-                      : transfer?.cancel(),
-                  icon: const Icon(Icons.close, size: 18),
-                ),
-              ],
-            )
-          else
-            Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 4,
-              children: [
-                if (kind == 'voice' && audioReady)
-                  TextButton(
-                    onPressed: () async {
-                      speed = speed == 1
-                          ? 1.5
-                          : speed == 1.5
-                          ? 2
-                          : 1;
-                      await player!.setSpeed(speed);
-                      if (mounted) setState(() {});
-                    },
-                    child: Text('${speed}x'),
-                  ),
-                if (message.delivery == Delivery.failed)
-                  TextButton.icon(
-                    onPressed: () => widget.controller.retryMessage(message.id),
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('Coba lagi'),
-                  ),
-                if (kind == 'voice' &&
-                    message.delivery != Delivery.queued &&
-                    message.delivery != Delivery.failed)
-                  IconButton(
-                    tooltip: kind == 'image' || kind == 'video'
-                        ? 'Simpan ke Galeri'
-                        : 'Simpan ke Download',
-                    onPressed: saving ? null : save,
-                    icon: Icon(
-                      saving ? Icons.hourglass_top : Icons.save_alt,
-                      size: 19,
-                    ),
-                  ),
-              ],
-            ),
-          if (kind == 'voice' && audioReady)
-            StreamBuilder<Duration>(
-              stream: player!.positionStream,
-              builder: (context, snapshot) {
-                final max = (player!.duration?.inMilliseconds.toDouble() ?? 1)
-                    .clamp(1.0, double.infinity);
-                return Slider(
-                  max: max,
-                  value: (snapshot.data?.inMilliseconds.toDouble() ?? 0).clamp(
-                    0,
-                    max,
-                  ),
-                  semanticFormatterCallback: (v) =>
-                      '${(v / 1000).round()} detik',
-                  onChanged: (v) =>
-                      player!.seek(Duration(milliseconds: v.round())),
-                );
-              },
-            ),
-        ],
+        ),
       ),
     );
   }

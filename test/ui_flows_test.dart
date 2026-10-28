@@ -202,66 +202,72 @@ void main() {
       },
     );
   }
-  testWidgets(
-    'image and document messages show different bubbles and explicit save controls',
-    (tester) async {
-      tester.view.physicalSize = const Size(390, 844);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final c = ChatController(vault: MemoryVault())..openPreview();
-      final chat = c.chats.first;
-      c.messages.clear();
-      c.messages.addAll([
-        ChatMessage(
-          id: 'photo',
-          chatId: chat.id,
-          senderId: chat.peer.id,
-          text: 'Foto',
-          at: DateTime.now(),
-          delivery: Delivery.delivered,
-          kind: 'attachment',
-          data: {
-            'name': 'holiday.png',
-            'mime': 'image/png',
-            'presentation': 'image',
-            'caption': 'Foto dari perjalanan tadi',
-            'size': 1024,
-            'thumbnail':
-                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=',
-          },
-        ),
-        ChatMessage(
-          id: 'doc',
-          chatId: chat.id,
-          senderId: c.me!.id,
-          text: 'report.pdf',
-          at: DateTime.now(),
-          delivery: Delivery.sent,
-          kind: 'attachment',
-          data: {'name': 'report.pdf', 'mime': 'application/pdf', 'size': 2048},
-        ),
-      ]);
-      await tester.pumpWidget(
-        RepaintBoundary(
-          key: previewKey,
-          child: MaterialApp(
-            debugShowCheckedModeBanner: false,
-            theme: adoetzTheme(Brightness.dark),
-            home: ChatScreen(controller: c, chat: chat),
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      '${brightness.name} image and document messages show different bubbles and explicit save controls',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final c = ChatController(vault: MemoryVault())..openPreview();
+        final chat = c.chats.first;
+        c.messages.clear();
+        c.messages.addAll([
+          ChatMessage(
+            id: 'photo',
+            chatId: chat.id,
+            senderId: chat.peer.id,
+            text: 'Foto',
+            at: DateTime.now(),
+            delivery: Delivery.delivered,
+            kind: 'attachment',
+            data: {
+              'name': 'holiday.png',
+              'mime': 'image/png',
+              'presentation': 'image',
+              'caption': 'Foto dari perjalanan tadi',
+              'size': 1024,
+              'thumbnail':
+                  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=',
+            },
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('Foto dari perjalanan tadi'), findsOneWidget);
-      expect(find.byType(AttachmentPreviewImage), findsOneWidget);
-      expect(find.text('report.pdf'), findsOneWidget);
-      expect(find.byTooltip('Simpan ke Galeri'), findsOneWidget);
-      expect(find.byTooltip('Simpan ke Download'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await capture(tester, 'chat-media');
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
+          ChatMessage(
+            id: 'doc',
+            chatId: chat.id,
+            senderId: c.me!.id,
+            text: 'report.pdf',
+            at: DateTime.now(),
+            delivery: Delivery.sent,
+            kind: 'attachment',
+            data: {
+              'name': 'report.pdf',
+              'mime': 'application/pdf',
+              'size': 2048,
+            },
+          ),
+        ]);
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: previewKey,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: adoetzTheme(brightness),
+              home: ChatScreen(controller: c, chat: chat),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Foto dari perjalanan tadi'), findsOneWidget);
+        expect(find.byType(AttachmentPreviewImage), findsOneWidget);
+        expect(find.text('report.pdf'), findsOneWidget);
+        expect(find.byTooltip('Simpan ke Galeri'), findsOneWidget);
+        expect(find.byTooltip('Simpan ke Download'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await capture(tester, 'chat-media-${brightness.name}');
+        await tester.pumpWidget(const SizedBox());
+        c.dispose();
+      },
+    );
+  }
 }
