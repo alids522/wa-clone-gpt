@@ -11,6 +11,10 @@ import android.content.SharedPreferences;
 import android.os.SystemClock;
 import android.service.notification.StatusBarNotification;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.By;
+import androidx.test.uiautomator.UiDevice;
+import androidx.test.uiautomator.UiObject2;
+import androidx.test.uiautomator.Until;
 import com.hiennv.flutter_callkit_incoming.SharedPreferencesUtilsKt;
 import com.hiennv.flutter_callkit_incoming.FlutterCallkitIncomingPlugin;
 import com.hiennv.flutter_callkit_incoming.CallkitEventCallback;
@@ -21,6 +25,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import static org.junit.Assert.*;
 
 /** Executes real Android notifications with no Supabase account or chat keys.
@@ -30,6 +35,7 @@ public class IncomingCallTest {
     private final NotificationManager manager=context.getSystemService(NotificationManager.class);
     private final String device="00000000-0000-4000-8000-000000000001";
     private final AtomicReference<MainActivity> main=new AtomicReference<>();
+    private final UiDevice ui=UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
     private Intent payload(String kind,String id,boolean video,int seconds) {
         return new Intent().putExtra("kind",kind).putExtra("event_id",id).putExtra("device",device)
             .putExtra("expires_at",Instant.now().plusSeconds(seconds).toString().replace("Z","+00:00")).putExtra("video",String.valueOf(video))
@@ -77,17 +83,22 @@ public class IncomingCallTest {
         return params;
     }
     private void answerFromNotification(boolean video) throws Exception {
-        // Real PendingIntent, not a synthesized Dart event or accept broadcast.
+        // Tap in SystemUI: sending its PendingIntent from this background test
+        // process does not carry the system's user-interaction launch grant.
+        ui.pressHome();
         String id=UUID.randomUUID().toString();
         receive(payload("call",id,video,40)); awaitNotification(true);
         Notification n=incoming().getNotification();
         assertTrue(n.extras.getCharSequence(Notification.EXTRA_TITLE).toString().contains("Penguji Panggilan"));
         Notification.Action answer=null;
         for(Notification.Action action:n.actions) {
-            if(action.title.toString().toLowerCase(java.util.Locale.ROOT).contains("answer")) answer=action;
+            if(Pattern.compile("(?i)(answer|terima)").matcher(action.title).find()) answer=action;
         }
         assertNotNull("System incoming-call Answer action missing",answer);
-        answer.actionIntent.send();
+        assertTrue("Open the system notification shade",ui.openNotification());
+        UiObject2 button=ui.wait(Until.findObject(By.text(Pattern.compile("(?i)(answer|terima)"))),8000);
+        assertNotNull("Visible system Answer button missing",button);
+        button.click();
         MainActivity activity=awaitForeground();
         long deadline=SystemClock.elapsedRealtime()+3000;
         while(!id.equals(CallUiBridge.pendingAnswer(context)) && SystemClock.elapsedRealtime()<deadline) SystemClock.sleep(50);
@@ -104,7 +115,8 @@ public class IncomingCallTest {
         receive(payload("call_end",id,video,40));
         SystemClock.sleep(300);
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> activity.moveTaskToBack(true));
-        SystemClock.sleep(500);
+        long backgroundDeadline=SystemClock.elapsedRealtime()+5000;
+        while(activity.isCallForeground() && SystemClock.elapsedRealtime()<backgroundDeadline) SystemClock.sleep(100);
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             try { CallUiBridge.startIncoming(activity,params(id,video)); fail("Background media service was allowed"); }
             catch(IllegalStateException expected) {}
@@ -112,8 +124,7 @@ public class IncomingCallTest {
     }
     private void answerInsideApp(boolean video) throws Exception {
         // Reopen main, then exercise the same adoption used by the in-app button.
-        Intent launch=context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-        context.startActivity(launch);
+        ui.executeShellCommand("am start -W -n "+context.getPackageName()+"/.MainActivity");
         MainActivity activity=awaitForeground();
         String id=UUID.randomUUID().toString();
         receive(payload("call",id,video,40)); awaitNotification(true);
