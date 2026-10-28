@@ -165,6 +165,10 @@ class MediaService {
     bool asDocument = false,
   }) async {
     if (c.preview) throw StateError('Lampiran tersedia setelah masuk.');
+    final owner = c.me?.id;
+    if (owner == null) {
+      throw StateError('Masuk kembali untuk mengirim lampiran.');
+    }
     final mime = voice ? 'audio/mp4' : await mimeFor(file, name);
     final limit = mime.startsWith('video/')
         ? 100
@@ -174,7 +178,7 @@ class MediaService {
     if (await file.length() > limit * 1024 * 1024) {
       throw StateError('Batas lampiran $limit MB.');
     }
-    final object = '${chat.id}/${c.me!.id}/${const Uuid().v4()}';
+    final object = '${chat.id}/$owner/${const Uuid().v4()}';
     final cache = await getApplicationSupportDirectory();
     final encrypted = File('${cache.path}/${const Uuid().v4()}.adoetz');
     var queued = false;
@@ -203,6 +207,9 @@ class MediaService {
         }
       }
       data['_upload_path'] = encrypted.path;
+      if (c.me?.id != owner) {
+        throw StateError('Akun berubah. Pilih ulang lampiran.');
+      }
       // The durable message/outbox holds the authenticated metadata. Retrying
       // sending never needs access to the original picker URI or microphone file.
       await c.send(
@@ -225,6 +232,10 @@ class MediaService {
     void Function(double)? onProgress,
     MediaDownload? transfer,
   }) async {
+    final owner = c.me?.id;
+    if (owner == null) {
+      throw StateError('Masuk kembali untuk membuka lampiran.');
+    }
     final data = message.data;
     final object = data['object'] as String;
     if (!object.startsWith('${message.chatId}/${message.senderId}/')) {
@@ -281,6 +292,9 @@ class MediaService {
       }
       if (transfer?.cancelled ?? false) throw StateError('Unduhan dibatalkan.');
       await MediaCipher.decrypt(cipher, out, data);
+      if (c.me?.id != owner) {
+        throw StateError('Akun berubah. Buka ulang lampiran.');
+      }
       if (transfer?.cancelled ?? false) throw StateError('Unduhan dibatalkan.');
       success = true;
       return out;
