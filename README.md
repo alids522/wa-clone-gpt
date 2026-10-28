@@ -35,7 +35,7 @@ Never include Supabase secret/service-role keys in client configuration.
 
 ## Supabase staging setup
 
-Use a dedicated staging project. The connected project was not modified; deployment waits for the owner's selected project reference.
+Use a dedicated staging project. This workspace's GitHub build now targets the owner's selected self-hosted server, `https://supabase.adoetz52.my.id`, with Firebase Android configuration stored in an encrypted Actions secret. The owner is installing the schema and function folders manually; see `docs/self-hosted-setup.md`. The previously connected Supabase Cloud project was not modified.
 
 1. Review `supabase/migrations/20261028011508_adoetz_foundation.sql` and apply it using the SQL editor or the Supabase CLI migration workflow. The `private` schema must not be exposed by the Data API.
 2. Enable email/password signup, disable email confirmation as specified in the PRD, and set the password minimum to 12. The Auth insert trigger validates and consumes invites atomically, including direct public signup calls. Keep provider rate limits enabled.
@@ -82,7 +82,7 @@ Alpha APKs use runner-local **debug signing** for installation tests. Their keys
 - `ANDROID_KEY_PASSWORD`
 - `GOOGLE_SERVICES_JSON`
 
-It also requires the Supabase variables above. Configure GitHub environment protection before using it. Preserve and back up the signing key. This workflow uploads a candidate artifact; it does not publish a release. Verify increasing version codes across workflows before distributing upgrades.
+It also requires the Supabase variables above. Configure GitHub environment protection before using it. Preserve and back up the signing key. This workspace has an initial protected local keystore at `android/app/adoetz-release.jks` and ignored signing metadata at `config/signing.local.json`; encrypted signing secrets are configured in GitHub Actions. Never commit either local file. This workflow uploads a candidate artifact; it does not publish a release. Verify increasing version codes across workflows before distributing upgrades.
 
 ## Verification
 

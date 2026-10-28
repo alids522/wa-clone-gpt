@@ -13,13 +13,13 @@ This tracks the actual 0.1.0 code, not the complete beta promised by the PRD.
 | Push | Firebase initialization/resources, contextual permission, token refresh/registration, foreground sync hint handler | Durable HTTP v1 worker, background notification display/deep links, token cleanup, Doze/OEM tests |
 | Rich chat | Local text search | Encrypted photo/video/document/voice-note transport and previews |
 | Calling | Navigation hides unavailable calls | WebRTC, TURN credential service, authenticated signaling, state machine, Android foreground/background incoming-call integration |
-| Release | Automated APK/checksum + CI artifact, signed candidate workflow | Owner's stable release keystore, protected environment, real install/upgrade QA, release publication, policy approvals |
+| Release | Automated APK/checksum + CI artifact, signed candidate workflow, protected local keystore and encrypted Actions signing secrets | Protected environment review, real install/upgrade QA, release publication, policy approvals |
 
 ## Configuration pending from the owner
 
-- New Supabase project URL/reference and project access; the existing inactive project is untouched.
-- Android Firebase configuration for `com.adoetzchat.messenger`.
-- A stable signing key before distributing persistent test installs.
+- Supabase client configuration now targets `https://supabase.adoetz52.my.id`; Auth is reachable and email auto-confirmation is enabled. The owner is manually installing the SQL/functions. The inactive cloud project is untouched.
+- Firebase configuration for `com.adoetzchat.messenger` is present locally and stored as an encrypted Actions secret.
+- The initial stable signing key is generated, excluded from Git, restricted to the local Windows account and configured in encrypted Actions secrets. Back it up before distributing persistent test installs.
 - TURN provider and budget before implementing and validating internet calling.
 
 ## Acceptance evidence
