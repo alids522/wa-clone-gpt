@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /** Protected FCM broadcasts ring before account preparation or chat sync starts.
- * Only opaque IDs, call type and server expiry are accepted. Auth and
+ * Hints contain opaque IDs, public caller name, call type and server expiry. Auth and
  * first-answer-wins are checked again before opening the microphone/camera. */
 public final class IncomingCallReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {

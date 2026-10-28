@@ -78,7 +78,7 @@ cover account/device isolation, malformed envelopes, key revision checks, stale
 archive writes and worker-driven expiry/dismissal fanout. Disposable live clients
 verify that a new vault/device restores history and call logs without inheriting
 the old identity. `Android incoming-call notifications` is a manually dispatched
-API-34 emulator suite for real native notification actions, cancellation, stale
+API-34/36 emulator suite for real native notification actions, cancellation, stale
 push suppression and full-screen-denied fallback, without a real user login.
 
 Physical Android 14/16 background, Doze, process-kill, lock-screen, audio/video and
@@ -96,8 +96,8 @@ service starts from the visible activity after capture permission is ready and
 before relay/signaling network work. Duplicate answers and old ring timeouts do
 not create another media session or end the accepted call.
 
-Native instrumentation now presses the actual Android notification Answer
-PendingIntent and checks the foreground handoff, persisted call ID, caller name,
+Native instrumentation now taps the actual Answer button in SystemUI (including
+its user-interaction launch grant) and checks the foreground handoff, persisted call ID, caller name,
 accepted native state and stale-push suppression. It separately claims an in-app
 answer and checks that no decline/hangup was emitted. The workflow runs on API 34
 and 36. Dart regression tests exercise both entry points for voice/video,
