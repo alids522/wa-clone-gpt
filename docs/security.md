@@ -24,7 +24,7 @@ Username mappings and Firebase/service-role credentials are server-only. Login h
 
 ## Push and calls
 
-FCM data contains opaque event/device IDs and event kinds; incoming calls also include voice/video type and server expiry. No message/file content or keys are sent. The private worker authenticates to Firebase HTTP v1, retries durable jobs and removes unregistered tokens. Local notifications use generic copy. A push is a wake hint; delivered requires successful device decryption and durable storage. No permission or network means no guaranteed immediate notification; force-stop behavior must be tested on the actual OS/OEM.
+FCM data contains opaque event/device IDs and event kinds; incoming calls also include voice/video type, server expiry and the public caller display name requested by the owner. No message/file content or keys are sent. The private worker authenticates to Firebase HTTP v1, retries durable jobs and removes unregistered tokens. Local notifications use generic copy. A push is a wake hint; delivered requires successful device decryption and durable storage. No permission or network means no guaranteed immediate notification; force-stop behavior must be tested on the actual OS/OEM.
 
 Call signaling travels through authenticated encrypted device messages. Server call state binds caller/callee devices and enforces first acceptance, timeout and busy status. TURN credentials require an active authorized call and expire after ten minutes. TURN relays media encrypted by WebRTC; it is not an admin media-decryption endpoint. Provider firewall ports and real microphone/camera/network-switching behavior are separate acceptance requirements.
 

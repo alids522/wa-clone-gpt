@@ -44,3 +44,12 @@ Actual Android MediaStore/SAF export, microphone/camera routing and screen-off n
 ## 0.4.0 history and incoming calls
 
 Password-wrapped encrypted archives, automatic fresh-login restoration, a durable Calls tab, native call notification preparation, background decline handling, cancellation hints and server-driven missed-call expiry are implemented. Disposable live clients restored chat and server call logs into a fresh vault with a different Signal identity. Local/SQL regression tests passed. The API-34 native notification workflow and two physical devices provide separate Android acceptance evidence; see [history and calls](history-and-calls.md).
+
+## 0.4.1 popup answer corrections
+
+Popup acceptance now survives native/Flutter startup, waits for the actual
+foreground activity before media capture, and shares the in-app answer adoption
+path. Native ringing is cleared without a hangup, accepted calls suppress late
+ring hints, stale timeouts no longer terminate media, and the incoming UI uses
+the public caller display name. See the [answer handoff](history-and-calls.md)
+for the regression coverage and physical-device boundary.

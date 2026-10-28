@@ -125,7 +125,21 @@ Future<void> backgroundPush(RemoteMessage message) async {
       );
       if (message.data['kind'] == 'call') {
         if (row['status'] == 'ringing') {
-          await PushService.showIncomingRow(row, uid);
+          var name = message.data['caller_name'];
+          if (name == null) {
+            try {
+              final profile = await client
+                  .from('profiles')
+                  .select('display_name,username')
+                  .eq('id', row['caller_id'])
+                  .single()
+                  .timeout(const Duration(seconds: 3));
+              name =
+                  profile['display_name'] as String? ??
+                  profile['username'] as String?;
+            } catch (_) {}
+          }
+          await PushService.showIncomingRow(row, uid, callerName: name);
         } else if (row['callee_device'] != device ||
             !['connecting', 'connected'].contains(row['status'])) {
           await FlutterCallkitIncoming.endCall(id);
@@ -441,13 +455,36 @@ class PushService {
       'call_action',
       params: {'call_id': id, 'device': c.deviceId, 'operation': 'get'},
     );
-    await showIncomingRow(Map<String, dynamic>.from(row), c.me!.id);
+    var name = c.chats
+        .where((chat) => chat.id == row['conversation_id'])
+        .firstOrNull
+        ?.peer
+        .name;
+    if (name == null) {
+      try {
+        final profile = await c.client!
+            .from('profiles')
+            .select('display_name,username')
+            .eq('id', row['caller_id'])
+            .single()
+            .timeout(const Duration(seconds: 3));
+        name =
+            profile['display_name'] as String? ??
+            profile['username'] as String?;
+      } catch (_) {}
+    }
+    await showIncomingRow(
+      Map<String, dynamic>.from(row),
+      c.me!.id,
+      callerName: name,
+    );
   }
 
   static Future<void> showIncomingRow(
     Map<String, dynamic> row,
-    String owner,
-  ) async {
+    String owner, {
+    String? callerName,
+  }) async {
     if (row['status'] != 'ringing' ||
         row['caller_id'] == owner ||
         DateTime.parse(row['expires_at']).isBefore(DateTime.now())) {
@@ -462,7 +499,9 @@ class PushService {
     await FlutterCallkitIncoming.showCallkitIncoming(
       CallKitParams(
         id: id,
-        nameCaller: 'Adoetz Chat',
+        nameCaller: callerName?.trim().isNotEmpty == true
+            ? callerName!
+            : 'Panggilan masuk',
         appName: 'Adoetz Chat',
         handle: 'Panggilan masuk',
         type: row['video'] == true ? 1 : 0,

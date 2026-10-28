@@ -46,10 +46,13 @@ public final class IncomingCallReceiver extends BroadcastReceiver {
             long remaining = Instant.parse(extras.getString("expires_at", "")).toEpochMilli() - System.currentTimeMillis();
             if (remaining <= 0 || remaining > 65000) return;
             if (prefs.contains("ended_"+id)) return;
+            if (CallUiBridge.handled(context,id)) return;
             if (id.equals(prefs.getString("call", ""))) return;
             if (!prepareCallkit(context)) return; // Firebase's Dart handler remains a fallback.
             boolean video = "true".equals(extras.getString("video"));
-            args.put("nameCaller", "Adoetz Chat");
+            String caller=extras.getString("caller_name","").replaceAll("[\\p{Cntrl}]", " ").trim();
+            if(caller.codePointCount(0,caller.length())>80) caller=caller.substring(0,caller.offsetByCodePoints(0,80));
+            args.put("nameCaller", caller.isEmpty() ? "Panggilan masuk" : caller);
             args.put("appName", "Adoetz Chat");
             args.put("handle", video ? "Panggilan video masuk" : "Panggilan suara masuk");
             args.put("type", video ? 1 : 0);
@@ -71,6 +74,7 @@ public final class IncomingCallReceiver extends BroadcastReceiver {
     }
 
     private static boolean prepareCallkit(Context context) {
+        CallUiBridge.install(context);
         // The upstream receiver silently skips notifications without a plugin
         // instance. Its registered headless engine creates the native managers
         // and receives decline/timeout events without initializing chat crypto.

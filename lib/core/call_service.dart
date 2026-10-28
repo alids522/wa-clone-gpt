@@ -7,9 +7,11 @@ import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
 import 'package:uuid/uuid.dart';
 import 'controller.dart';
 import 'models.dart';
+import 'native_call_ui.dart';
 
 class CallService extends ChangeNotifier with WidgetsBindingObserver {
-  CallService(this.controller) {
+  CallService(this.controller, {NativeCallUi? nativeUi, this.onFailure})
+    : nativeUi = nativeUi ?? NativeCallUi() {
     _instances[controller] = this;
     WidgetsBinding.instance.addObserver(this);
     _events = controller.events.stream.listen((_) => _processSignals());
@@ -24,7 +26,7 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
         _endedFromNative().catchError(_failure);
       }
       if (event is CallEventActionCallTimeout && event.id == id) {
-        end().catchError(_failure);
+        _poll(); // A stale ring timeout must never hang up an accepted call.
       }
     });
     _timer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
@@ -33,6 +35,8 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
   static final _instances = Expando<CallService>();
   static CallService of(ChatController c) => _instances[c]!;
   final ChatController controller;
+  final NativeCallUi nativeUi;
+  final void Function(Object, StackTrace)? onFailure;
   VoidCallback? onShow;
   String? id, error;
   Conversation? chat;
@@ -54,6 +58,7 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
       _disposed = false,
       _descriptionSent = false;
   bool _answering = false;
+  String _stage = 'idle';
   Timer? _timer, _disconnect, _candidateTimer;
   StreamSubscription<ChatMessage>? _events;
   StreamSubscription<CallEvent?>? _native;
@@ -86,6 +91,11 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
   );
   Future<void> _restoreNative() async {
     try {
+      final pending = await nativeUi.pendingAnswer();
+      if (pending != null) {
+        await answer(pending);
+        return;
+      }
       for (final call in await FlutterCallkitIncoming.activeCalls()) {
         if (call.isAccepted) {
           await answer(call.id);
@@ -114,10 +124,16 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed && !_disposed) _restoreNative();
   }
 
-  void _failure(Object _) {
+  void _failure(Object cause, [StackTrace? stack]) {
     if (state == 'ended' || _closing) return;
-    error =
-        'Panggilan belum dapat tersambung. Periksa izin mikrofon dan koneksi.';
+    onFailure?.call(cause, stack ?? StackTrace.current);
+    error = switch (_stage) {
+      'foreground' => 'Buka layar aplikasi untuk melanjutkan panggilan.',
+      'offer' => 'Sinyal panggilan belum diterima. Coba telepon kembali.',
+      'media' =>
+        'Mikrofon atau kamera belum dapat dibuka. Periksa izin perangkat.',
+      _ => 'Panggilan belum dapat tersambung. Periksa koneksi lalu coba lagi.',
+    };
     end(failed: true).catchError((Object _) {});
   }
 
@@ -180,34 +196,64 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
       if (!_validCall(startedId)) return;
       state = 'ringing';
       _notify();
-    } catch (e) {
-      if (id == startedId && active) _failure(e);
+    } catch (e, stack) {
+      if (id == startedId && active) _failure(e, stack);
     }
   }
 
   Future<void> answer(String callId) async {
     if (_closing) return;
-    if (_answering ||
-        (id == callId &&
-            _pc != null &&
-            ['connecting', 'connected'].contains(state))) {
+    if (_answering) return;
+    if (id == callId &&
+        _pc != null &&
+        ['connecting', 'connected'].contains(state)) {
+      await nativeUi.clearPending(callId).catchError((Object _) {});
       return;
     }
     _answering = true;
     try {
+      _stage = 'foreground';
+      // Popup events can arrive before MainActivity is resumed/focused. Starting
+      // WebRTC here used to request capture while Android still saw a background
+      // app. A native, persisted answer survives both engine and route startup.
+      await _waitForForeground();
       await _answerInternal(callId);
-    } catch (e) {
-      _failure(e);
+    } catch (e, stack) {
+      _failure(e, stack);
     } finally {
+      await nativeUi.clearPending(callId).catchError((Object _) {});
       _answering = false;
     }
   }
 
+  Future<void> _waitForForeground() async {
+    for (var i = 0; i < 150; i++) {
+      if (_disposed || controller.me == null) {
+        throw StateError('Call cancelled');
+      }
+      if (!controller.locked && await nativeUi.foreground()) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    throw StateError('Call screen is not foreground');
+  }
+
+  Map<String, dynamic> get _nativeParams => {
+    'id': id,
+    'nameCaller': chat?.peer.name ?? 'Panggilan masuk',
+    'appName': 'Adoetz Chat',
+    'handle': chat == null ? 'Panggilan masuk' : '@${chat!.peer.username}',
+    'type': video ? 1 : 0,
+  };
+
   Future<void> _answerInternal(String callId) async {
+    _stage = 'validate';
     if (active && id == callId && !incoming) return;
     final row = await _action('get', callId: callId);
     if (!['ringing', 'connecting'].contains(row['status']) ||
         row['caller_id'] == controller.me?.id) {
+      if (row['status'] != 'connected') {
+        await FlutterCallkitIncoming.endCall(callId);
+      }
       return;
     }
     if (active && id != callId) {
@@ -229,7 +275,12 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
     _notify();
     onShow?.call();
     try {
+      _stage = 'accept';
       _row = await _action('accept');
+      // Adopt the native call and stop ringing immediately for BOTH answer
+      // buttons. This does not publish a decline/end event to the server.
+      await nativeUi.claim(_nativeParams);
+      _stage = 'offer';
       await controller.sync();
       ChatMessage? offer;
       for (
@@ -253,7 +304,12 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
       if (offer == null) throw StateError('Offer belum tersedia.');
+      if (!_validCall(callId)) return;
+      _stage = 'foreground';
+      await _waitForForeground();
+      _stage = 'media';
       await _prepare();
+      _stage = 'signaling';
       await _pc!.setRemoteDescription(
         RTCSessionDescription(offer.data['sdp'], 'offer'),
       );
@@ -264,8 +320,9 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
       await _flushCandidates();
       await _drainCandidates();
       _processSignals();
-    } catch (e) {
-      _failure(e);
+      _stage = 'connecting';
+    } catch (e, stack) {
+      _failure(e, stack);
     }
   }
 
@@ -327,6 +384,12 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
     for (final track in _stream!.getAudioTracks()) {
       track.enabled = !muted;
     }
+    if (incoming) {
+      _stage = 'foreground';
+      await _waitForForeground();
+      await nativeUi.start(_nativeParams);
+    }
+    _stage = 'relay';
     final config = await _iceConfig();
     if (!_validCall(preparingId)) throw StateError('Call cancelled');
     final peerConnection = await createPeerConnection({
@@ -492,6 +555,7 @@ class CallService extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _poll() async {
     if (_polling ||
+        _answering ||
         _disposed ||
         controller.me == null ||
         controller.preview ||

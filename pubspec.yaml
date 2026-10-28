@@ -1,7 +1,7 @@
 name: adoetz_chat
 description: Private invitation-only Android messenger. Internal technical prototype.
 publish_to: none
-version: 0.4.0+7
+version: 0.4.1+9
 environment:
   sdk: '>=3.12.0 <4.0.0'
 dependencies:

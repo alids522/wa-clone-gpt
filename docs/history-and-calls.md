@@ -49,7 +49,7 @@ password fails to decrypt it.
 ## Call notification lifecycle
 
 The service-role-only push dispatcher sends high-priority FCM call hints with
-opaque call/device IDs, voice/video type and the actual server expiry. The
+opaque call/device IDs, voice/video type, public caller display name and the actual server expiry. Caller names were enabled at the owner's request in 0.4.1; message content and keys remain excluded. The
 Android receiver requires Google's C2DM sender permission and the currently
 registered device marker. It prepares Callkit's registered headless engine and
 displays the incoming notification before account preparation or chat crypto.
@@ -84,3 +84,23 @@ push suppression and full-screen-denied fallback, without a real user login.
 Physical Android 14/16 background, Doze, process-kill, lock-screen, audio/video and
 OEM battery-policy acceptance remains necessary. Android force-stop cannot be
 bypassed. This remains an internal technical prototype, not an audited release.
+
+## 0.4.1 answer handoff
+
+Native answers are persisted with the current registered device until the
+foreground call service claims them. Both popup and in-app answers wait for a
+resumed, focused MainActivity (and an unlocked account) before capture. Server
+acceptance is followed immediately by native ring dismissal and an accepted
+native record, without a decline/end event. The microphone/camera foreground
+service starts from the visible activity after capture permission is ready and
+before relay/signaling network work. Duplicate answers and old ring timeouts do
+not create another media session or end the accepted call.
+
+Native instrumentation now presses the actual Android notification Answer
+PendingIntent and checks the foreground handoff, persisted call ID, caller name,
+accepted native state and stale-push suppression. It separately claims an in-app
+answer and checks that no decline/hangup was emitted. The workflow runs on API 34
+and 36. Dart regression tests exercise both entry points for voice/video,
+foreground delay, ring dismissal while encrypted sync is pending, duplicate
+answers, a connected peer event and an obsolete ring timeout. Physical two-device
+media acceptance remains distinct from these integration-boundary checks.

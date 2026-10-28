@@ -41,7 +41,7 @@ Deno.serve(async request => {
         const data: Record<string, string> = { event_id: job.event_id, kind: job.kind, device: job.device_id };
         let ttl = job.kind === 'message' ? '86400s' : '45s';
         if (job.kind === 'call') {
-          const { data: call, error } = await service.from('calls').select('status,expires_at,video').eq('id', job.event_id).single();
+          const { data: call, error } = await service.from('calls').select('caller_id,status,expires_at,video').eq('id', job.event_id).single();
           if (error) { retry++; return; }
           const remaining = Math.floor((Date.parse(call.expires_at) - Date.now()) / 1000);
           if (call.status !== 'ringing' || remaining <= 0) {
@@ -49,6 +49,11 @@ Deno.serve(async request => {
           }
           data.expires_at = call.expires_at;
           data.video = String(call.video);
+          // Public profile metadata, explicitly requested by the owner for
+          // incoming-call identification. Message text and keys stay excluded.
+          const { data: caller } = await service.from('profiles').select('display_name,username').eq('id', call.caller_id).single();
+          const name = String(caller?.display_name || caller?.username || 'Panggilan masuk');
+          data.caller_name = Array.from(name.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).slice(0,80).join('');
           ttl = `${Math.min(45, remaining)}s`;
         }
         const response = await fetch(`https://fcm.googleapis.com/v1/projects/${credential.project}/messages:send`, { method: 'POST', headers: { Authorization: `Bearer ${credential.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { token: job.token, data, android: { priority: 'HIGH', ttl } } }), signal: AbortSignal.timeout(10000) });
