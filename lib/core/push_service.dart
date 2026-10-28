@@ -159,7 +159,9 @@ Future<void> backgroundPush(RemoteMessage message) async {
   } finally {
     await subscription?.cancel();
     controller?.dispose();
-    if (initialized) await Supabase.instance.client.dispose();
+    // Reset Flutter's singleton too: Firebase reuses this isolate for later
+    // pushes, and initialize() otherwise returns a client already disposed.
+    if (initialized) await Supabase.instance.dispose();
   }
 }
 
