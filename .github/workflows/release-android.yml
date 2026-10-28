@@ -47,7 +47,7 @@ jobs:
       - name: Verify notification resources survived release shrinking
         run: python3 tools/verify_release_resources.py build/app/outputs/flutter-apk/app-release.apk
       - run: cd build/app/outputs/flutter-apk && sha256sum app-release.apk > SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adoetz-chat-signed-candidate
           path: |
