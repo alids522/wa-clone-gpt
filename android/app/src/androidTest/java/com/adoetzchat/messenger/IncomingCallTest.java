@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+import java.io.ByteArrayOutputStream;
 import static org.junit.Assert.*;
 
 /** Executes real Android notifications with no Supabase account or chat keys.
@@ -36,6 +37,7 @@ public class IncomingCallTest {
     private final String device="00000000-0000-4000-8000-000000000001";
     private final AtomicReference<MainActivity> main=new AtomicReference<>();
     private final UiDevice ui=UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+    private static final Pattern ANSWER=Pattern.compile("(?i)(answer|accept|terima|video)");
     private Intent payload(String kind,String id,boolean video,int seconds) {
         return new Intent().putExtra("kind",kind).putExtra("event_id",id).putExtra("device",device)
             .putExtra("expires_at",Instant.now().plusSeconds(seconds).toString().replace("Z","+00:00")).putExtra("video",String.valueOf(video))
@@ -92,11 +94,23 @@ public class IncomingCallTest {
         assertTrue(n.extras.getCharSequence(Notification.EXTRA_TITLE).toString().contains("Penguji Panggilan"));
         Notification.Action answer=null;
         for(Notification.Action action:n.actions) {
-            if(Pattern.compile("(?i)(answer|terima)").matcher(action.title).find()) answer=action;
+            if(ANSWER.matcher(action.title).matches()) answer=action;
         }
-        assertNotNull("System incoming-call Answer action missing",answer);
+        assertNotNull("System incoming-call Answer action missing: "+java.util.Arrays.toString(
+            java.util.Arrays.stream(n.actions).map(a -> a.title.toString()).toArray()),answer);
         assertTrue("Open the system notification shade",ui.openNotification());
-        UiObject2 button=ui.wait(Until.findObject(By.text(Pattern.compile("(?i)(answer|terima)"))),8000);
+        UiObject2 button=ui.wait(Until.findObject(By.text(ANSWER)),5000);
+        if(button==null) {
+            UiObject2 expand=ui.findObject(By.res("android","expand_button"));
+            if(expand!=null) expand.click();
+            button=ui.wait(Until.findObject(By.text(ANSWER)),5000);
+        }
+        if(button==null) button=ui.findObject(By.desc(ANSWER));
+        if(button==null) {
+            ByteArrayOutputStream hierarchy=new ByteArrayOutputStream();
+            ui.dumpWindowHierarchy(hierarchy);
+            System.out.println("Answer failure SystemUI hierarchy: "+hierarchy.toString(java.nio.charset.StandardCharsets.UTF_8));
+        }
         assertNotNull("Visible system Answer button missing",button);
         button.click();
         MainActivity activity=awaitForeground();
@@ -108,6 +122,16 @@ public class IncomingCallTest {
             CallUiBridge.claimIncoming(activity,params(id,video));
             CallUiBridge.startIncoming(activity,params(id,video));
         });
+        long serviceDeadline=SystemClock.elapsedRealtime()+5000;
+        boolean foregroundService=false;
+        while(!foregroundService && SystemClock.elapsedRealtime()<serviceDeadline) {
+            for(StatusBarNotification active:manager.getActiveNotifications()) {
+                Notification ongoing=active.getNotification();
+                if((ongoing.flags & Notification.FLAG_FOREGROUND_SERVICE)!=0) foregroundService=true;
+            }
+            if(!foregroundService) SystemClock.sleep(100);
+        }
+        assertTrue("Answered call must have a running foreground service",foregroundService);
         assertNull(CallUiBridge.pendingAnswer(context));
         assertTrue(SharedPreferencesUtilsKt.getDataActiveCalls(context).stream().anyMatch(call -> id.equals(call.getId()) && call.isAccepted()));
         receive(payload("call",id,video,40));
