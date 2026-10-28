@@ -7,9 +7,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.SystemClock;
 import android.service.notification.StatusBarNotification;
-import androidx.test.core.app.ActivityScenario;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.hiennv.flutter_callkit_incoming.SharedPreferencesUtilsKt;
+import com.hiennv.flutter_callkit_incoming.FlutterCallkitIncomingPlugin;
 import org.junit.Test;
 import java.time.Instant;
 import java.util.UUID;
@@ -23,7 +23,7 @@ public class IncomingCallTest {
     private final String device="00000000-0000-4000-8000-000000000001";
     private Intent payload(String kind,String id,boolean video,int seconds) {
         return new Intent().putExtra("kind",kind).putExtra("event_id",id).putExtra("device",device)
-            .putExtra("expires_at",Instant.now().plusSeconds(seconds).toString()).putExtra("video",String.valueOf(video));
+            .putExtra("expires_at",Instant.now().plusSeconds(seconds).toString().replace("Z","+00:00")).putExtra("video",String.valueOf(video));
     }
     private void receive(Intent intent) {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> new IncomingCallReceiver().onReceive(context,intent));
@@ -44,29 +44,35 @@ public class IncomingCallTest {
         Long handle=SharedPreferencesUtilsKt.getPluginCallbackHandle(context);
         return handle!=null && handle!=0;
     }
-    @Test public void backgroundAudioVideoCancelStaleAndHeadsUpFallback() throws Exception {
-        // Flutter main registers the headless callback once. No user signs in.
-        try(ActivityScenario<MainActivity> app=ActivityScenario.launch(MainActivity.class)) {
-            long deadline=SystemClock.elapsedRealtime()+15000;
-            while(!registered() && SystemClock.elapsedRealtime()<deadline) SystemClock.sleep(100);
-            assertTrue("Callkit background callback was not registered",registered());
+    private void fullScreenPermission(boolean allowed) throws Exception {
+        try(android.os.ParcelFileDescriptor command=InstrumentationRegistry.getInstrumentation().getUiAutomation()
+            .executeShellCommand("appops set "+context.getPackageName()+" USE_FULL_SCREEN_INTENT "+(allowed?"allow":"deny"))) {
+            new java.io.FileInputStream(command.getFileDescriptor()).readAllBytes();
         }
+        assertEquals(allowed,manager.canUseFullScreenIntent());
+    }
+    @Test public void backgroundAudioVideoCancelStaleAndHeadsUpFallback() throws Exception {
+        // The workflow launched main once, returned Home, then killed the app
+        // process. Instrumentation starts this new process without an Activity.
+        assertTrue("Launch the configured app once before running this suite",registered());
+        assertNull("Exercise a cold process without an existing Flutter plugin",FlutterCallkitIncomingPlugin.Companion.getInstance());
+        assertEquals("com.google.android.c2dm.permission.SEND",context.getPackageManager()
+            .getReceiverInfo(new android.content.ComponentName(context,IncomingCallReceiver.class),0).permission);
         InstrumentationRegistry.getInstrumentation().getUiAutomation().grantRuntimePermission(context.getPackageName(),"android.permission.POST_NOTIFICATIONS");
         SharedPreferences prefs=context.getSharedPreferences("adoetz_call_push",Context.MODE_PRIVATE);
         prefs.edit().clear().putString("device",device).commit();
         manager.cancelAll();
-        try(android.os.ParcelFileDescriptor command=InstrumentationRegistry.getInstrumentation().getUiAutomation()
-            .executeShellCommand("appops set "+context.getPackageName()+" USE_FULL_SCREEN_INTENT deny")) {
-            new java.io.FileInputStream(command.getFileDescriptor()).readAllBytes();
-        }
-        assertFalse("Exercise the Android 14 heads-up fallback",manager.canUseFullScreenIntent());
         try {
+          for(boolean fullScreen:new boolean[]{false,true}) {
+            fullScreenPermission(fullScreen);
             for(boolean video:new boolean[]{false,true}) {
                 String id=UUID.randomUUID().toString();
                 receive(payload("call",id,video,40));
                 awaitNotification(true);
                 Notification n=incoming().getNotification();
-                assertNotNull("Incoming calls need a lock-screen intent",n.fullScreenIntent);
+                // Android strips FSI when permission is denied. The fallback
+                // still needs visible high-priority answer/decline actions.
+                if(fullScreen) assertNotNull("Permitted calls need a lock-screen intent",n.fullScreenIntent);
                 assertTrue("Answer and decline actions required",n.actions.length>=2);
                 assertTrue(manager.getNotificationChannel(n.getChannelId()).getImportance()>=NotificationManager.IMPORTANCE_HIGH);
                 receive(payload("call_end",id,video,40));
@@ -76,6 +82,7 @@ public class IncomingCallTest {
                 SystemClock.sleep(500);
                 assertNull(incoming());
             }
+          }
             receive(payload("call",UUID.randomUUID().toString(),false,-1));
             receive(payload("call",UUID.randomUUID().toString(),false,40).putExtra("device","another-device"));
             SystemClock.sleep(500);
