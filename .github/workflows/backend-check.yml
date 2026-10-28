@@ -27,7 +27,7 @@ jobs:
       PGHOST: localhost
       PGUSER: postgres
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Create isolated Supabase Auth fixtures
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/bootstrap.sql
       - name: Apply versioned schema
