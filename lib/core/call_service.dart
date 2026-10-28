@@ -43,6 +43,7 @@ class CallService extends ChangeNotifier {
       speaker = false,
       cameraOff = false;
   DateTime? connectedAt;
+  bool frontCamera = true;
   final local = RTCVideoRenderer(), remote = RTCVideoRenderer();
   RTCPeerConnection? _pc;
   MediaStream? _stream;
@@ -260,6 +261,7 @@ class CallService extends ChangeNotifier {
 
   bool _validCall(String callId) => id == callId && active && !_closing;
   Future<void> _prepare() async {
+    frontCamera = true;
     final preparingId = id!;
     if (!_validCall(preparingId)) throw StateError('Call cancelled');
     if (!_renderers) {
@@ -571,7 +573,8 @@ class CallService extends ChangeNotifier {
   Future<void> switchCamera() async {
     final tracks = _stream?.getVideoTracks();
     if (tracks != null && tracks.isNotEmpty) {
-      await Helper.switchCamera(tracks.first);
+      frontCamera = await Helper.switchCamera(tracks.first);
+      _notify();
     }
   }
 

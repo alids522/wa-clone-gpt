@@ -21,7 +21,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     this.client,
     this.background = false,
     this.onSyncError,
-  });
+    StreamingStorage? uploader,
+  }) : _uploader = uploader ?? StreamingStorage();
   final void Function(Object, StackTrace)? onSyncError;
   final bool background;
   final Vault vault;
@@ -42,6 +43,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   String? deviceId;
   int _revision = 0;
   final Set<String> hidden = {};
+  final Map<String, double> uploadProgress = {};
+  String? _uploadingMessage;
   final Map<String, String> _dirtyDrafts = {};
   final StreamController<ChatMessage> events = StreamController.broadcast();
   Timer? _timer;
@@ -57,7 +60,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   bool _syncOnOpen = true;
   bool _syncAgain = false, _uploading = false;
   DateTime _uploadRetry = DateTime(2000);
-  final _uploader = StreamingStorage();
+  final StreamingStorage _uploader;
   String? activeChat;
   bool foreground = true;
   String? get readingChat =>
@@ -721,9 +724,30 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     });
     for (final job in jobs) {
       if (me?.id != owner || _disposed) return;
+      var pending = false;
+      await _exclusive(() async {
+        pending = messages.any(
+          (m) =>
+              m.id == job['id'] &&
+              m.delivery == Delivery.queued &&
+              m.data['_upload_path'] == job['path'],
+        );
+      });
+      if (!pending) continue;
       final file = File(job['path']);
       try {
-        await _uploader.upload(client!, job['object'], file);
+        _uploadingMessage = job['id'];
+        await _uploader.upload(
+          client!,
+          job['object'],
+          file,
+          onProgress: (progress) {
+            if (me?.id == owner && !_disposed) {
+              uploadProgress[job['id']] = progress;
+              notifyListeners();
+            }
+          },
+        );
         var committed = false;
         await _exclusive(() async {
           if (me?.id != owner) return;
@@ -751,6 +775,14 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
             await _commit();
           }
         });
+      } finally {
+        uploadProgress.remove(job['id']);
+        _uploadingMessage = null;
+        if (!messages.any((m) => m.id == job['id']) && await file.exists()) {
+          try {
+            await file.delete();
+          } catch (_) {}
+        }
       }
     }
     if (!_disposed) notifyListeners();
@@ -998,6 +1030,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> retryMessage(String id) async {
+    _uploadRetry = DateTime(2000);
     await _exclusive(() async {
       messages.firstWhere((m) => m.id == id).delivery = Delivery.queued;
       await _commit();
@@ -1005,7 +1038,38 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     await sync();
   }
 
+  Future<void> cancelAttachment(String id) async {
+    if (_uploadingMessage == id) _uploader.cancel();
+    String? path;
+    await _exclusive(() async {
+      final item = messages
+          .where(
+            (m) =>
+                m.id == id &&
+                m.senderId == me?.id &&
+                m.envelope == null &&
+                m.data['_upload_path'] != null,
+          )
+          .firstOrNull;
+      if (item == null) return;
+      path = item.data['_upload_path'];
+      hidden.add(id);
+      messages.remove(item);
+      await _commit();
+    });
+    if (path != null) {
+      try {
+        await File(path!).delete();
+      } catch (_) {}
+    }
+    if (!_disposed) notifyListeners();
+  }
+
   Future<void> cancelQueued(String id) async {
+    if (messages.any((m) => m.id == id && m.data['_upload_path'] != null)) {
+      await cancelAttachment(id);
+      return;
+    }
     await _exclusive(() async {
       final m = messages.firstWhere((m) => m.id == id);
       if (m.serverId != null || m.delivery != Delivery.queued) return;

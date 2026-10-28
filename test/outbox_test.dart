@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
@@ -9,6 +10,29 @@ import 'package:adoetz_chat/core/controller.dart';
 import 'package:adoetz_chat/core/models.dart';
 import 'package:adoetz_chat/core/signal_store.dart';
 import 'package:adoetz_chat/core/vault.dart';
+import 'package:adoetz_chat/core/streaming_storage.dart';
+
+class PausedUpload extends StreamingStorage {
+  final started = Completer<void>(), finished = Completer<void>();
+  int cancellations = 0;
+  @override
+  Future<void> upload(
+    SupabaseClient client,
+    String object,
+    File file, {
+    void Function(double)? onProgress,
+  }) {
+    started.complete();
+    onProgress?.call(.4);
+    return finished.future;
+  }
+
+  @override
+  void cancel() {
+    cancellations++;
+    if (!finished.isCompleted) finished.completeError(StateError('Cancelled'));
+  }
+}
 
 class FailingVault extends MemoryVault {
   @override
@@ -36,6 +60,63 @@ class PausedSignalStore extends PersistentSignalStore {
 void main() {
   const self = Person(id: 'alice', username: 'alice', name: 'Alice');
   const peer = Person(id: 'bob', username: 'bob', name: 'Bob');
+  test(
+    'canceling an in-flight attachment never publishes it and removes durable queue data',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('adoetz-cancel-');
+      final file = await File('${dir.path}/cipher').writeAsBytes([1, 2, 3]);
+      final uploader = PausedUpload();
+      final endpoints = <String>[];
+      final client = SupabaseClient(
+        'https://test.invalid',
+        'test-key',
+        accessToken: () async => 'test-token',
+        authOptions: const AuthClientOptions(autoRefreshToken: false),
+        httpClient: MockClient((request) async {
+          final name = request.url.pathSegments.last;
+          endpoints.add(name);
+          if (name != 'my_account' &&
+              name != 'list_chats' &&
+              name != 'sync_device_messages') {
+            throw StateError('Canceled media must never be sent: $name');
+          }
+          return http.Response(
+            jsonEncode(
+              name == 'my_account' ? {'role': 'user', 'status': 'active'} : [],
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+            request: request,
+          );
+        }),
+      );
+      final vault = MemoryVault();
+      final c = ChatController(vault: vault, client: client, uploader: uploader)
+        ..me = self
+        ..deviceId = 'phone'
+        ..signalStore = await PersistentSignalStore.create();
+      final chat = Conversation(id: 'chat', peer: peer);
+      c.chats.add(chat);
+      await c.send(
+        chat,
+        'File',
+        kind: 'attachment',
+        data: {'_upload_path': file.path, 'object': 'chat/alice/object'},
+      );
+      await uploader.started.future.timeout(const Duration(seconds: 5));
+      final id = c.messages.single.id;
+      await c.cancelAttachment(id);
+      await c.sync();
+      expect(uploader.cancellations, 1);
+      expect(c.messages, isEmpty);
+      expect((await readJson(vault, 'account_alice'))['messages'], isEmpty);
+      expect(await file.exists(), isFalse);
+      expect(endpoints, isNot(contains('send_device_message')));
+      c.dispose();
+      await client.dispose();
+      await dir.delete();
+    },
+  );
   test(
     'upgrade retries a committed legacy envelope without advancing keys',
     () async {

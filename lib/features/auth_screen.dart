@@ -71,12 +71,12 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                   ],
                 ),
-                SizedBox(height: form ? 28 : 64),
+                SizedBox(height: form ? 16 : 28),
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: BrandMark(size: form ? 60 : 88),
+                  child: BrandMark(size: form ? 52 : 64),
                 ),
-                const SizedBox(height: 30),
+                const SizedBox(height: 20),
                 Text(
                   form
                       ? (register
@@ -84,7 +84,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             : 'Senang kamu\nkembali.')
                       : 'Percakapan kecil.\nKoneksi berarti.',
                   style: const TextStyle(
-                    fontSize: 38,
+                    fontSize: 32,
                     height: 1.15,
                     fontWeight: FontWeight.w800,
                     letterSpacing: -1.6,
@@ -103,10 +103,10 @@ class _AuthScreenState extends State<AuthScreen> {
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(height: 36),
+                const SizedBox(height: 24),
                 if (!form) ...[
                   Container(
-                    padding: const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surface,
                       borderRadius: BorderRadius.circular(20),
@@ -136,7 +136,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
                   FilledButton(
                     onPressed: () => setState(() {
                       form = true;

@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import '../app/theme.dart';
 import '../app/widgets.dart';
 import '../core/controller.dart';
-import '../core/push_service.dart';
 import 'admin_screen.dart';
 import 'devices_screen.dart';
 import 'password_screen.dart';
+import 'notification_settings.dart';
 import '../core/media_service.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -18,8 +18,8 @@ class SettingsScreen extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 32),
       children: [
         Container(
-          margin: const EdgeInsets.fromLTRB(24, 18, 24, 0),
-          padding: const EdgeInsets.all(20),
+          margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surface,
             borderRadius: BorderRadius.circular(20),
@@ -84,7 +84,7 @@ class SettingsScreen extends StatelessWidget {
         ),
         const SectionLabel('Personalisasi'),
         ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Tampilan'),
           subtitle: Text(switch (c.theme) {
@@ -96,36 +96,22 @@ class SettingsScreen extends StatelessWidget {
           onTap: () => _appearance(context),
         ),
         ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           leading: const Icon(Icons.notifications_none_rounded),
           title: const Text('Notifikasi'),
           subtitle: const Text('Pratinjau pesan disembunyikan'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () async {
-            try {
-              final enabled = await PushService.enable(c);
-              if (context.mounted) {
-                showNotice(
-                  context,
-                  enabled
-                      ? 'Notifikasi diaktifkan. Isi pesan tetap privat.'
-                      : 'Notifikasi belum diizinkan. Kamu tetap dapat membuka chat.',
-                );
-              }
-            } catch (_) {
-              if (context.mounted) {
-                showNotice(
-                  context,
-                  'Notifikasi belum tersedia. Konfigurasi Firebase sedang disiapkan.',
-                );
-              }
-            }
-          },
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => NotificationSettings(controller: c),
+            ),
+          ),
         ),
         const SectionLabel('Privasi & keamanan'),
         if (!c.preview)
           SwitchListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
             secondary: const Icon(Icons.fingerprint),
             title: const Text('Kunci aplikasi'),
             subtitle: const Text(
@@ -151,7 +137,7 @@ class SettingsScreen extends StatelessWidget {
             },
           ),
         SwitchListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           secondary: const Icon(Icons.screenshot_monitor),
           title: const Text('Lindungi tangkapan layar'),
           subtitle: const Text(
@@ -162,7 +148,7 @@ class SettingsScreen extends StatelessWidget {
         ),
         if (!c.preview)
           ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
             leading: const Icon(Icons.password),
             title: const Text('Ganti password'),
             onTap: () => Navigator.push(
@@ -173,7 +159,7 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
         SwitchListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           secondary: const Icon(Icons.done_all_rounded),
           title: const Text('Tanda dibaca'),
           subtitle: const Text('Bagikan saat pesan sudah dibuka'),
@@ -183,7 +169,7 @@ class SettingsScreen extends StatelessWidget {
           },
         ),
         ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           leading: const Icon(Icons.phonelink_lock_outlined),
           title: const Text('Perangkat & kunci'),
           subtitle: const Text('Kelola perangkat yang masuk ke akunmu'),
@@ -212,7 +198,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
         ),
         ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           leading: const Icon(Icons.block_outlined),
           title: const Text('Kontak diblokir'),
           subtitle: Text('${c.blocked.length} kontak'),
@@ -251,7 +237,7 @@ class SettingsScreen extends StatelessWidget {
         if (c.isAdmin) ...[
           const SectionLabel('Administrasi'),
           ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
             leading: const Icon(
               Icons.admin_panel_settings_outlined,
               color: ice,
@@ -267,7 +253,7 @@ class SettingsScreen extends StatelessWidget {
         ],
         const SectionLabel('Tentang'),
         ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
           leading: const Icon(Icons.info_outline_rounded),
           title: const Text('Adoetz Chat'),
           subtitle: const Text('0.1.0 alpha · prototipe internal'),
@@ -376,7 +362,7 @@ class SettingsScreen extends StatelessWidget {
             const SectionLabel('Tampilan'),
             for (final mode in ThemeMode.values)
               ListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
                 leading: Icon(switch (mode) {
                   ThemeMode.system => Icons.brightness_auto_outlined,
                   ThemeMode.dark => Icons.dark_mode_outlined,

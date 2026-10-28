@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import '../app/theme.dart';
 import '../app/widgets.dart';
@@ -11,6 +9,7 @@ import '../core/models.dart';
 import '../core/call_service.dart';
 import '../core/media_service.dart';
 import 'media_widgets.dart';
+import 'attachment_composer.dart';
 import 'devices_screen.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -121,7 +120,7 @@ class _ChatScreenState extends State<ChatScreen> {
         appBar: AppBar(
           toolbarHeight: MediaQuery.textScalerOf(
             context,
-          ).scale(40).clamp(64, 100),
+          ).scale(36).clamp(56, 96),
           titleSpacing: 0,
           title: InkWell(
             onTap: _profile,
@@ -194,7 +193,7 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(color: Theme.of(context).dividerColor),
@@ -237,7 +236,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   : ListView.builder(
                       controller: scroll,
                       reverse: true,
-                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final m = messages[index];
@@ -248,20 +247,21 @@ class _ChatScreenState extends State<ChatScreen> {
                               ? Alignment.centerRight
                               : Alignment.centerLeft,
                           child: Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.only(bottom: 5),
                             child: ConstrainedBox(
                               constraints: BoxConstraints(
                                 maxWidth:
-                                    MediaQuery.sizeOf(context).width * .78,
+                                    (MediaQuery.sizeOf(context).width * .86)
+                                        .clamp(0, 520),
                               ),
                               child: GestureDetector(
                                 onLongPress: () => _messageActions(m),
                                 child: Container(
                                   padding: const EdgeInsets.fromLTRB(
-                                    16,
-                                    12,
-                                    12,
-                                    9,
+                                    10,
+                                    7,
+                                    8,
+                                    5,
                                   ),
                                   decoration: BoxDecoration(
                                     color: mine
@@ -384,7 +384,7 @@ class _ChatScreenState extends State<ChatScreen> {
             SafeArea(
               top: false,
               child: Container(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
                 decoration: BoxDecoration(
                   color: Theme.of(context).scaffoldBackgroundColor,
                   border: Border(
@@ -436,8 +436,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                     hintText: 'Tulis pesan…',
                                     counterText: '',
                                     contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 18,
-                                      vertical: 14,
+                                      horizontal: 12,
+                                      vertical: 10,
                                     ),
                                   ),
                                   onChanged: (value) {
@@ -483,7 +483,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 style: IconButton.styleFrom(
                                   backgroundColor: brand,
                                   foregroundColor: Colors.white,
-                                  minimumSize: const Size(52, 52),
+                                  minimumSize: const Size(48, 48),
                                 ),
                                 onPressed: sending ? null : send,
                                 icon: const Icon(Icons.arrow_upward_rounded),
@@ -501,71 +501,19 @@ class _ChatScreenState extends State<ChatScreen> {
   );
   Future<void> _call(bool video) async {
     try {
-      await CallService.of(
-        widget.controller,
-      ).start(widget.chat, withVideo: video);
+      final service = CallService.of(widget.controller);
+      if (service.active) {
+        service.onShow?.call();
+        return;
+      }
+      await service.start(widget.chat, withVideo: video);
     } catch (_) {
       if (mounted) showNotice(context, 'Panggilan tersedia setelah masuk.');
     }
   }
 
-  Future<void> _attach() async {
-    try {
-      final selected = await FilePicker.pickFile();
-      if (selected == null || selected.path == null || !mounted) return;
-      final file = selected;
-      final fileSize = await File(file.path!).length();
-      if (!mounted) return;
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Kirim lampiran?'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (RegExp(
-                r'\.(jpg|jpeg|png|webp)$',
-                caseSensitive: false,
-              ).hasMatch(file.name))
-                Image.file(File(file.path!), height: 180, fit: BoxFit.contain),
-              const SizedBox(height: 12),
-              Text(file.name),
-              Text('${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Batal'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Kirim'),
-            ),
-          ],
-        ),
-      );
-      if (ok != true) return;
-      setState(() => sending = true);
-      await MediaService.send(
-        widget.controller,
-        widget.chat,
-        File(file.path!),
-        file.name,
-      );
-    } catch (e) {
-      if (mounted) {
-        showNotice(
-          context,
-          e is StateError
-              ? e.message
-              : 'Lampiran belum dapat dikirim. Coba lagi.',
-        );
-      }
-    } finally {
-      if (mounted) setState(() => sending = false);
-    }
-  }
+  Future<void> _attach() =>
+      composeAttachments(context, widget.controller, widget.chat);
 
   Future<void> _react(ChatMessage m) async {
     final emoji = await showModalBottomSheet<String>(

@@ -11,7 +11,12 @@ class StreamingStorage {
     _active = null;
   }
 
-  Future<void> upload(SupabaseClient client, String object, File file) async {
+  Future<void> upload(
+    SupabaseClient client,
+    String object,
+    File file, {
+    void Function(double)? onProgress,
+  }) async {
     final sessionToken = client.accessToken != null
         ? await client.accessToken!()
         : client.auth.currentSession?.accessToken;
@@ -48,8 +53,19 @@ class StreamingStorage {
       request.headers.contentType = ContentType('application', 'octet-stream');
       request.headers.set('x-upsert', 'false');
       request.contentLength = await file.length();
+      var sent = 0, percent = -1;
       await request
-          .addStream(file.openRead())
+          .addStream(
+            file.openRead().map((bytes) {
+              sent += bytes.length;
+              final next = (100 * sent / request.contentLength).floor();
+              if (next != percent) {
+                percent = next;
+                onProgress?.call(sent / request.contentLength);
+              }
+              return bytes;
+            }),
+          )
           .timeout(const Duration(minutes: 5));
       final response = await request.close().timeout(
         const Duration(seconds: 30),

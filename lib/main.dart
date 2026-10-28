@@ -5,14 +5,18 @@ import 'core/controller.dart';
 import 'core/vault.dart';
 import 'core/push_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (PushService.configured) {
-    FirebaseMessaging.onBackgroundMessage(backgroundPush);
     try {
+      await Firebase.initializeApp();
+      FirebaseMessaging.onBackgroundMessage(backgroundPush);
       await PushService.initialize();
-    } catch (_) {}
+    } catch (_) {
+      PushService.status.value = PushState.setupFailed;
+    }
   }
   const vault = DeviceVault();
   const url = String.fromEnvironment('SUPABASE_URL');

@@ -1,4 +1,4 @@
-# Implementation and acceptance status — 0.2.0
+# Implementation and acceptance status — 0.3.0
 
 The owner requested multi-device support ahead of the PRD's original P2 schedule. Each installation has independent Signal keys; a second login no longer replaces or conflicts with the first device.
 
@@ -30,3 +30,13 @@ Disposable live accounts/files were cleaned up. Existing account count, original
 - Some secondary PRD UX remains simplified: voice notes use a recording sheet rather than hold/swipe/lock gestures; safety verification currently compares numeric fingerprints; archive/shared-media browsing and advanced admin pagination/filtering are not complete. Groups, encrypted backup/recovery, iOS/web and group calls remain P2.
 
 Live integration is opt-in: `flutter test test/live_acceptance_test.dart --dart-define=ACCEPTANCE_FIXTURE=<ignored-fixture-path>`. It requires disposable accounts created by `tools/server_acceptance.py`, followed by its `finish` and `cleanup` modes. An optional `ACCEPTANCE_PROXY` value can configure an HTTP CONNECT proxy for a constrained local network. Ordinary CI skips only this live test and runs the local suites.
+
+## 0.3.0 notification and interface fixes
+
+The signed 0.2.0 APK lost `ic_notification` during Android resource shrinking. The notification plugin failed before FCM token registration, while the UI showed a misleading generic Play Services/permission error. The release now explicitly keeps dynamic resources and CI inspects the built APK resource table; the regression check rejects the old APK. Firebase initializes explicitly before background registration. Setup, Android/channel permission, token acquisition and server registration have distinct states, safe diagnostic codes and retry. Settings offer a local notification test and Android/full-screen call settings. A successful local notification does not prove remote FCM delivery.
+
+Media menus distinguish photos, videos, camera capture and documents, with up to ten selections and captions. Bounded JPEG thumbnails and video duration remain inside Signal payloads. Inline image/video bubbles open an internal image/video viewer; gallery/download/save-as exports require user action. Transfers show progress, cancellation and retry. A cancellation regression verifies that an in-flight upload is removed from the durable outbox without publishing a message. Temporary picked copies are cleaned only within the app cache.
+
+Chat/header/list/composer spacing is reduced while keeping touch controls usable. Call screens show connection state/duration, a control dock, draggable local video and camera flip, and an ongoing-call bar allows returning after minimizing. Root Back returns other tabs to Chats, then requires two presses within two seconds to background the UI. It does not force-stop the process or revoke push registration. Widget tests cover normal nested Back, timeout, small screens, large text, landscape call controls, inline media and save affordances.
+
+Actual Android MediaStore/SAF export, microphone/camera routing and screen-off notification delivery on the owner's two physical devices still need install-time acceptance. The existing database/functions do not require a migration for this update.

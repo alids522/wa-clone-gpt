@@ -67,6 +67,8 @@ void main() {
         find.text('Jelajahi pratinjau aplikasi →'),
         220,
       );
+      await tester.ensureVisible(find.text('Jelajahi pratinjau aplikasi →'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Jelajahi pratinjau aplikasi →'));
       await tester.pumpAndSettle();
       expect(

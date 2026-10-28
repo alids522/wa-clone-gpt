@@ -85,7 +85,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
   Widget build(BuildContext context) => Column(
     children: [
       Padding(
-        padding: const EdgeInsets.fromLTRB(24, 18, 24, 12),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
         child: TextField(
           onChanged: search,
           autocorrect: false,
@@ -130,8 +130,8 @@ class _PeopleScreenState extends State<PeopleScreen> {
                   for (final p in people)
                     ListTile(
                       contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 8,
+                        horizontal: 16,
+                        vertical: 2,
                       ),
                       leading: Avatar(p),
                       title: Text(

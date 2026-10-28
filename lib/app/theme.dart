@@ -25,17 +25,25 @@ ThemeData adoetzTheme(Brightness brightness) {
     colorScheme: scheme,
     scaffoldBackgroundColor: bg,
     fontFamily: 'sans-serif',
+    visualDensity: const VisualDensity(horizontal: 0, vertical: -1),
+    listTileTheme: const ListTileThemeData(
+      contentPadding: EdgeInsets.symmetric(horizontal: 16),
+      horizontalTitleGap: 12,
+      minLeadingWidth: 40,
+      minVerticalPadding: 6,
+    ),
     appBarTheme: AppBarTheme(
       backgroundColor: bg,
       surfaceTintColor: Colors.transparent,
       centerTitle: false,
       elevation: 0,
+      toolbarHeight: 56,
     ),
     dividerColor: border,
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: raised,
-      contentPadding: const EdgeInsets.all(18),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
         borderSide: BorderSide.none,
@@ -53,14 +61,14 @@ ThemeData adoetzTheme(Brightness brightness) {
       style: FilledButton.styleFrom(
         backgroundColor: brand,
         foregroundColor: Colors.white,
-        minimumSize: const Size(48, 54),
+        minimumSize: const Size(48, 48),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        minimumSize: const Size(48, 54),
+        minimumSize: const Size(48, 48),
         side: BorderSide(color: border),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
