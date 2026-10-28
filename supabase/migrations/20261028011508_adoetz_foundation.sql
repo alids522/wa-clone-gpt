@@ -213,10 +213,10 @@ revoke all on function public.my_account(),public.search_people(text),public.cre
 grant execute on function public.my_account(),public.search_people(text),public.create_chat(uuid),public.list_chats(),public.register_device(jsonb),public.get_prekey_bundle(uuid,boolean),public.send_message(uuid,uuid,jsonb),public.sync_messages(uuid,bigint),public.register_push_token(text) to authenticated;
 
 -- Service-only helpers for edge functions.
-create function public.adoetz_rate_limit(key_hash text) returns boolean language plpgsql security invoker set search_path = '' as $$
+create function public.adoetz_rate_limit(bucket_hash text) returns boolean language plpgsql security invoker set search_path = '' as $$
 declare hits int;
 begin
- insert into private.rate_limits as r(key_hash,window_start,requests) values(key_hash,now(),1) on conflict(key_hash) do update set requests=case when r.window_start<now()-interval '1 minute' then 1 else r.requests+1 end,window_start=case when r.window_start<now()-interval '1 minute' then now() else r.window_start end returning requests into hits;
+ insert into private.rate_limits as r(key_hash,window_start,requests) values(bucket_hash,now(),1) on conflict(key_hash) do update set requests=case when r.window_start<now()-interval '1 minute' then 1 else r.requests+1 end,window_start=case when r.window_start<now()-interval '1 minute' then now() else r.window_start end returning requests into hits;
  return hits<=10;
 end $$;
 create function public.adoetz_login_lookup(identifier text) returns text language sql stable security invoker set search_path = '' as $$ select u.email from auth.users u join public.profiles p on p.id=u.id join private.accounts a on a.id=u.id where p.username=identifier and a.status='active' limit 1 $$;
@@ -246,6 +246,9 @@ end $$;
 revoke all on function public.adoetz_rate_limit(text),public.adoetz_login_lookup(text),public.adoetz_admin_snapshot(uuid,text),public.adoetz_admin_action(uuid,uuid,text,text,uuid,text) from public,anon,authenticated;
 grant execute on function public.adoetz_rate_limit(text),public.adoetz_login_lookup(text),public.adoetz_admin_snapshot(uuid,text),public.adoetz_admin_action(uuid,uuid,text,text,uuid,text) to service_role;
 grant all on private.accounts,private.invitations,private.audit_logs,private.rate_limits,private.prekeys,private.push_tokens to service_role;
+grant select on public.profiles to service_role;
+grant usage on schema auth to service_role;
+grant select(id,email) on auth.users to service_role;
 grant usage,select on sequence private.audit_logs_id_seq to service_role;
 
 -- Postgres Changes is a small closed-alpha hint. Catch-up RPC is authoritative.

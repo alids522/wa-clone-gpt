@@ -79,4 +79,20 @@ do $$ begin
  exception when insufficient_privilege then null; end;
 end $$;
 reset role;
+update private.accounts set role='admin',status='active' where id='00000000-0000-4000-8000-000000000001';
+set local role service_role;
+do $$ begin
+ if not public.adoetz_rate_limit('test-bucket') then raise exception 'Rate limiter rejected first request'; end if;
+ for i in 2..10 loop perform public.adoetz_rate_limit('test-bucket'); end loop;
+ if public.adoetz_rate_limit('test-bucket') then raise exception 'Rate limiter failed to enforce limit'; end if;
+ perform public.adoetz_admin_snapshot('00000000-0000-4000-8000-000000000001','users');
+ perform public.adoetz_admin_action('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','suspend','Test suspension','20000000-0000-4000-8000-000000000001');
+ if (select status from private.accounts where id='00000000-0000-4000-8000-000000000002')<>'suspended' then raise exception 'Admin action did not apply'; end if;
+ if (select count(*) from private.audit_logs)<>1 then raise exception 'Admin action was not audited'; end if;
+ begin
+  perform public.adoetz_admin_action('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000001','suspend','Self target','20000000-0000-4000-8000-000000000002');
+  raise exception 'Self-targeting admin action allowed' using errcode='XX000';
+ exception when insufficient_privilege then null; end;
+end $$;
+reset role;
 rollback;

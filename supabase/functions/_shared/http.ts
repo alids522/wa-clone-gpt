@@ -18,6 +18,6 @@ export async function body(request: Request) {
   return JSON.parse(raw);
 }
 export async function rateLimit(service: ReturnType<typeof clients>['service'], scope: string) {
-  const { data, error } = await service.rpc('adoetz_rate_limit', { key_hash: await hash(scope) });
+  const { data, error } = await service.rpc('adoetz_rate_limit', { bucket_hash: await hash(scope) });
   if (error || data !== true) throw Error('Rate limited');
 }
