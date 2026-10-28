@@ -239,7 +239,11 @@ class ChatController extends ChangeNotifier {
     await sync();
   }
 
-  Future<void> persist() async {
+  // UI preference/draft writes must wait for a whole crypto transaction.
+  // Otherwise a timer could persist an advanced ratchet before its envelope.
+  Future<void> persist() => _exclusive(_commit);
+
+  Future<void> _commit() async {
     if (preview || me == null) return;
     final key = 'account_${me!.id}';
     final snapshot = jsonEncode({
@@ -385,7 +389,7 @@ class ChatController extends ChangeNotifier {
                   } else {
                     throw StateError('Unsupported event');
                   }
-                  await persist(); // Commit received plaintext + ratchet before advancing cursor or ACK.
+                  await _commit(); // Commit received plaintext + ratchet before advancing cursor or ACK.
                 } catch (_) {
                   messages.removeRange(beforeLength, messages.length);
                   chat.unread = unread;
@@ -401,12 +405,12 @@ class ChatController extends ChangeNotifier {
                 }
               }
               cursors[chat.id] = sequence;
-              await persist();
+              await _commit();
             }
           }
         }
         await _flush();
-        await persist();
+        await _commit();
       });
       offline = false;
       _attempt = 0;
@@ -441,7 +445,7 @@ class ChatController extends ChangeNotifier {
       );
       drafts.remove(chat.id);
       try {
-        await persist();
+        await _commit();
       } catch (_) {
         messages.removeLast();
         rethrow;
@@ -485,7 +489,7 @@ class ChatController extends ChangeNotifier {
               'kind': m.kind,
             }),
           );
-          await persist(); // Atomic ratchet + envelope. Retry always uses this envelope.
+          await _commit(); // Atomic ratchet + envelope. Retry always uses this envelope.
         } catch (_) {
           signalStore = PersistentSignalStore(
             Map<String, dynamic>.from(jsonDecode(snapshot)),
@@ -507,7 +511,7 @@ class ChatController extends ChangeNotifier {
         m.serverId = result['id'];
         m.at = DateTime.parse(result['created_at']);
         m.delivery = Delivery.sent;
-        await persist();
+        await _commit();
       } on PostgrestException catch (e) {
         if (['42501', '22023', 'P0001'].contains(e.code)) {
           m.delivery = Delivery.failed;
@@ -550,7 +554,7 @@ class ChatController extends ChangeNotifier {
           m.delivery = Delivery.read;
         }
       }
-      await persist();
+      await _commit();
     });
     await sync();
   }
