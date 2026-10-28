@@ -47,8 +47,10 @@ void main() {
   ) async {
     tester.view.physicalSize = const Size(320, 740);
     tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     final c = ChatController(vault: MemoryVault());
     await tester.pumpWidget(
       MediaQuery(
@@ -56,6 +58,12 @@ void main() {
         child: AdoetzApp(controller: c),
       ),
     );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    c.openPreview();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('Maya Putri'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     c.dispose();

@@ -38,9 +38,11 @@ class ChatMessage {
     this.delivery = Delivery.queued,
     this.envelope,
     this.serverId,
+    this.kind = 'text',
   });
   final String id, chatId, senderId, text;
-  final DateTime at;
+  final String kind;
+  DateTime at;
   Delivery delivery;
   String? serverId;
   Map<String, dynamic>? envelope;
@@ -55,6 +57,7 @@ class ChatMessage {
         ? null
         : Map<String, dynamic>.from(j['envelope']),
     serverId: j['server_id'],
+    kind: j['kind'] ?? 'text',
   );
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -65,6 +68,7 @@ class ChatMessage {
     'delivery': delivery.name,
     'envelope': envelope,
     'server_id': serverId,
+    'kind': kind,
   };
 }
 

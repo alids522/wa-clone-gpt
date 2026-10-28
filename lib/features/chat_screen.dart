@@ -24,7 +24,7 @@ class _ChatScreenState extends State<ChatScreen> {
       text: widget.controller.drafts[widget.chat.id] ?? '',
     );
     widget.controller.activeChat = widget.chat.id;
-    widget.chat.unread = 0;
+    widget.controller.markRead(widget.chat);
   }
 
   @override
@@ -66,6 +66,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final blocked = c.blocked.contains(chat.peer.id);
       return Scaffold(
         appBar: AppBar(
+          toolbarHeight: MediaQuery.textScalerOf(
+            context,
+          ).scale(40).clamp(64, 100),
           titleSpacing: 0,
           title: InkWell(
             onTap: _profile,
@@ -316,8 +319,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 ),
                               ),
                               onChanged: (value) {
-                                c.drafts[chat.id] = value;
-                                c.persist();
+                                c.setDraft(chat.id, value);
                               },
                               onSubmitted: (_) => send(),
                             ),

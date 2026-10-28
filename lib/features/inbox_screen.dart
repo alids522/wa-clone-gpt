@@ -39,7 +39,9 @@ class _HomeScreenState extends State<HomeScreen> {
           });
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 84,
+        toolbarHeight: MediaQuery.textScalerOf(
+          context,
+        ).scale(60).clamp(84, 140),
         titleSpacing: 24,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -56,6 +58,8 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 5),
             Text(
               ['Percakapan', 'Kontak', 'Pengaturan'][tab],
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 fontSize: 28,
                 letterSpacing: -.8,

@@ -100,8 +100,8 @@ class SettingsScreen extends StatelessWidget {
         SwitchListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 24),
           secondary: const Icon(Icons.done_all_rounded),
-          title: const Text('Preferensi tanda dibaca'),
-          subtitle: const Text('Disimpan untuk rilis tanda baca terenkripsi'),
+          title: const Text('Tanda dibaca'),
+          subtitle: const Text('Bagikan saat pesan sudah dibuka'),
           value: c.readReceipts,
           onChanged: (value) {
             c.readReceipts = value;

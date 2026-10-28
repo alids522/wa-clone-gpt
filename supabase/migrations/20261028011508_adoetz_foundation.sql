@@ -108,7 +108,7 @@ alter table private.audit_logs enable row level security;
 alter table private.rate_limits enable row level security;
 alter table private.prekeys enable row level security;
 alter table private.push_tokens enable row level security;
-revoke all on all tables in schema public from anon,authenticated;
+revoke all on public.profiles,public.conversations,public.blocked_users,public.devices,public.messages from anon,authenticated;
 grant select on public.profiles,public.conversations,public.messages to authenticated;
 grant update(display_name,bio,discoverable) on public.profiles to authenticated;
 grant select,insert,delete on public.blocked_users to authenticated;
@@ -167,20 +167,20 @@ begin
  end loop;
 end $$;
 create function public.register_device(bundle jsonb) returns void language sql security invoker set search_path = '' as $$ select private.register_device(bundle) $$;
-create function private.get_prekey_bundle(peer uuid) returns jsonb language plpgsql security definer set search_path = '' as $$
+create function private.get_prekey_bundle(peer uuid,consume boolean default true) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare result jsonb; selected_key private.prekeys;
 begin
  if not exists(select 1 from public.conversations where peer in (member_a,member_b) and private.can_send_chat(id)) then raise insufficient_privilege; end if;
  select bundle into result from public.devices where user_id=peer;
  if result is null then raise exception 'Peer has not initialized device'; end if;
  select * into selected_key from private.prekeys where user_id=peer order by key_id limit 1 for update skip locked;
- if selected_key.key_id is not null then
+ if consume and selected_key.key_id is not null then
   delete from private.prekeys where user_id=peer and key_id=selected_key.key_id;
   result := result || jsonb_build_object('prekey',jsonb_build_object('id',selected_key.key_id,'key',selected_key.public_key));
  end if;
  return result;
 end $$;
-create function public.get_prekey_bundle(peer uuid) returns jsonb language sql security invoker set search_path = '' as $$ select private.get_prekey_bundle(peer) $$;
+create function public.get_prekey_bundle(peer uuid,consume boolean default true) returns jsonb language sql security invoker set search_path = '' as $$ select private.get_prekey_bundle(peer,consume) $$;
 create function private.send_message(chat uuid,client_id uuid,envelope jsonb) returns jsonb language plpgsql security definer set search_path = '' as $$
 declare result public.messages;
 begin
@@ -207,10 +207,10 @@ end $$;
 create function public.register_push_token(push_token text) returns void language sql security invoker set search_path = '' as $$ select private.register_push_token(push_token) $$;
 
 -- Explicitly scoped function privileges; private isn't in exposed API schemas.
-revoke all on all functions in schema private from public,anon,authenticated;
-grant execute on function private.is_active(uuid),private.can_read_chat(uuid),private.can_send_chat(uuid),private.my_account(),private.search_people(text),private.create_chat(uuid),private.list_chats(),private.register_device(jsonb),private.get_prekey_bundle(uuid),private.send_message(uuid,uuid,jsonb),private.sync_messages(uuid,bigint),private.register_push_token(text) to authenticated;
-revoke all on function public.my_account(),public.search_people(text),public.create_chat(uuid),public.list_chats(),public.register_device(jsonb),public.get_prekey_bundle(uuid),public.send_message(uuid,uuid,jsonb),public.sync_messages(uuid,bigint),public.register_push_token(text) from public,anon;
-grant execute on function public.my_account(),public.search_people(text),public.create_chat(uuid),public.list_chats(),public.register_device(jsonb),public.get_prekey_bundle(uuid),public.send_message(uuid,uuid,jsonb),public.sync_messages(uuid,bigint),public.register_push_token(text) to authenticated;
+revoke all on function private.is_active(uuid),private.can_read_chat(uuid),private.can_send_chat(uuid),private.on_signup(),private.my_account(),private.search_people(text),private.create_chat(uuid),private.list_chats(),private.register_device(jsonb),private.get_prekey_bundle(uuid,boolean),private.send_message(uuid,uuid,jsonb),private.sync_messages(uuid,bigint),private.register_push_token(text) from public,anon,authenticated;
+grant execute on function private.is_active(uuid),private.can_read_chat(uuid),private.can_send_chat(uuid),private.my_account(),private.search_people(text),private.create_chat(uuid),private.list_chats(),private.register_device(jsonb),private.get_prekey_bundle(uuid,boolean),private.send_message(uuid,uuid,jsonb),private.sync_messages(uuid,bigint),private.register_push_token(text) to authenticated;
+revoke all on function public.my_account(),public.search_people(text),public.create_chat(uuid),public.list_chats(),public.register_device(jsonb),public.get_prekey_bundle(uuid,boolean),public.send_message(uuid,uuid,jsonb),public.sync_messages(uuid,bigint),public.register_push_token(text) from public,anon;
+grant execute on function public.my_account(),public.search_people(text),public.create_chat(uuid),public.list_chats(),public.register_device(jsonb),public.get_prekey_bundle(uuid,boolean),public.send_message(uuid,uuid,jsonb),public.sync_messages(uuid,bigint),public.register_push_token(text) to authenticated;
 
 -- Service-only helpers for edge functions.
 create function public.adoetz_rate_limit(key_hash text) returns boolean language plpgsql security invoker set search_path = '' as $$
@@ -245,8 +245,8 @@ begin
 end $$;
 revoke all on function public.adoetz_rate_limit(text),public.adoetz_login_lookup(text),public.adoetz_admin_snapshot(uuid,text),public.adoetz_admin_action(uuid,uuid,text,text,uuid,text) from public,anon,authenticated;
 grant execute on function public.adoetz_rate_limit(text),public.adoetz_login_lookup(text),public.adoetz_admin_snapshot(uuid,text),public.adoetz_admin_action(uuid,uuid,text,text,uuid,text) to service_role;
-grant all on all tables in schema private to service_role;
-grant usage,select on all sequences in schema private to service_role;
+grant all on private.accounts,private.invitations,private.audit_logs,private.rate_limits,private.prekeys,private.push_tokens to service_role;
+grant usage,select on sequence private.audit_logs_id_seq to service_role;
 
 -- Postgres Changes is a small closed-alpha hint. Catch-up RPC is authoritative.
 do $$ begin
@@ -254,3 +254,5 @@ do $$ begin
   alter publication supabase_realtime add table public.messages;
  end if;
 end $$;
+
+

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'models.dart';
 import 'push_service.dart';
 import 'signal_store.dart';
@@ -25,18 +26,35 @@ class ChatController extends ChangeNotifier {
   final Map<String, String> cursors = {};
   PersistentSignalStore? signalStore;
   Timer? _timer;
+  Timer? _draftTimer;
   StreamSubscription<AuthState>? _auth;
   RealtimeChannel? _channel;
   Future<void> _serial = Future.value();
+  Future<void> _writes = Future.value();
+  DateTime _nextRetry = DateTime(2000);
   int _attempt = 0;
   bool _syncing = false, _disposed = false;
   String? activeChat;
   bool get configured => client != null;
   bool get isAdmin => me?.role == 'admin' && me?.status == 'active' && !preview;
   void notifyPreferences() => notifyListeners();
+  void setDraft(String chatId, String value) {
+    drafts[chatId] = value;
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 400), () {
+      persist().catchError((Object _) {
+        error = 'Draf belum tersimpan. Periksa penyimpanan perangkat.';
+        if (!_disposed) notifyListeners();
+      });
+    });
+  }
+
   List<ChatMessage> inChat(String id) =>
-      messages.where((m) => m.chatId == id).toList()
-        ..sort((a, b) => a.at.compareTo(b.at));
+      messages.where((m) => m.chatId == id && m.kind == 'text').toList()
+        ..sort((a, b) {
+          final time = a.at.compareTo(b.at);
+          return time == 0 ? a.id.compareTo(b.id) : time;
+        });
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
@@ -60,6 +78,7 @@ class ChatController extends ChangeNotifier {
       try {
         await _openAccount();
       } catch (_) {
+        _clear();
         error = 'Tidak dapat membuka akun. Coba masuk kembali.';
       }
     }
@@ -130,6 +149,11 @@ class ChatController extends ChangeNotifier {
       error =
           'Belum dapat terhubung. Periksa koneksi atau hubungi administrator.';
     } finally {
+      if (error != null) {
+        final message = error;
+        _clear();
+        error = message;
+      }
       busy = false;
       notifyListeners();
     }
@@ -138,15 +162,24 @@ class ChatController extends ChangeNotifier {
   Future<void> _openAccount() async {
     final uid = client!.auth.currentUser!.id;
     final state = await readJson(vault, 'account_$uid');
-    final profile = await client!
-        .from('profiles')
-        .select()
-        .eq('id', uid)
-        .single()
-        .timeout(const Duration(seconds: 15));
-    final account = await client!
-        .rpc('my_account')
-        .timeout(const Duration(seconds: 15));
+    Map<String, dynamic> profile;
+    Map<String, dynamic> account;
+    try {
+      profile = await client!
+          .from('profiles')
+          .select()
+          .eq('id', uid)
+          .single()
+          .timeout(const Duration(seconds: 15));
+      account = Map<String, dynamic>.from(
+        await client!.rpc('my_account').timeout(const Duration(seconds: 15)),
+      );
+    } catch (_) {
+      if (state['me'] == null || state['crypto'] == null) rethrow;
+      profile = Map<String, dynamic>.from(state['me']);
+      account = {'role': profile['role'], 'status': profile['status']};
+      offline = true;
+    }
     if (account['status'] != 'active') {
       throw StateError('Akun ini dinonaktifkan. Hubungi administrator.');
     }
@@ -180,10 +213,14 @@ class ChatController extends ChangeNotifier {
         ? await PersistentSignalStore.create()
         : PersistentSignalStore(Map<String, dynamic>.from(state['crypto']));
     await persist(); // Retain identity before publishing public keys.
-    await client!.rpc(
-      'register_device',
-      params: {'bundle': await signalStore!.publicBundle()},
-    );
+    if (!offline) {
+      await client!
+          .rpc(
+            'register_device',
+            params: {'bundle': await signalStore!.publicBundle()},
+          )
+          .timeout(const Duration(seconds: 20));
+    }
     _channel = client!
         .channel('inbox-$uid')
         .onPostgresChanges(
@@ -197,25 +234,27 @@ class ChatController extends ChangeNotifier {
         .subscribe();
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 8), (_) {
-      sync();
+      if (DateTime.now().isAfter(_nextRetry)) sync();
     });
     await sync();
   }
 
   Future<void> persist() async {
     if (preview || me == null) return;
-    await vault.write(
-      'account_${me!.id}',
-      jsonEncode({
-        'chats': chats.map((c) => c.toJson()).toList(),
-        'messages': messages.map((m) => m.toJson()).toList(),
-        'drafts': drafts,
-        'cursors': cursors,
-        'blocked': blocked.toList(),
-        'read_receipts': readReceipts,
-        'crypto': signalStore?.data,
-      }),
-    );
+    final key = 'account_${me!.id}';
+    final snapshot = jsonEncode({
+      'me': me!.toJson(),
+      'chats': chats.map((c) => c.toJson()).toList(),
+      'messages': messages.map((m) => m.toJson()).toList(),
+      'drafts': drafts,
+      'cursors': cursors,
+      'blocked': blocked.toList(),
+      'read_receipts': readReceipts,
+      'crypto': signalStore?.data,
+    });
+    final write = _writes.then((_) => vault.write(key, snapshot));
+    _writes = write.catchError((Object _) {});
+    await write;
   }
 
   Future<void> _exclusive(Future<void> Function() operation) {
@@ -274,11 +313,18 @@ class ChatController extends ChangeNotifier {
                   (m) => m.id == row['client_message_id'],
                 )) {
                   m.serverId = row['id'];
-                  m.delivery = Delivery.sent;
+                  m.at = DateTime.parse(row['created_at']);
+                  if (m.delivery == Delivery.queued ||
+                      m.delivery == Delivery.failed) {
+                    m.delivery = Delivery.sent;
+                  }
                 }
               } else if (!messages.any((m) => m.serverId == row['id'])) {
                 final envelope = Map<String, dynamic>.from(row['ciphertext']);
                 final before = jsonEncode(signalStore!.data);
+                final beforeLength = messages.length;
+                final unread = chat.unread;
+                final statuses = {for (final m in messages) m.id: m.delivery};
                 try {
                   final content = jsonDecode(
                     await SignalEngine(
@@ -299,11 +345,53 @@ class ChatController extends ChangeNotifier {
                       text: content['text'],
                       at: DateTime.parse(row['created_at']),
                       delivery: Delivery.delivered,
+                      kind: content['kind'] ?? 'text',
                     ),
                   );
-                  if (activeChat != chat.id) chat.unread++;
+                  if (content['kind'] == 'receipt') {
+                    final receipt = jsonDecode(content['text']);
+                    if (!['delivered', 'read'].contains(receipt['state']) ||
+                        (receipt['ids'] as List).length > 50) {
+                      throw StateError('Invalid receipt');
+                    }
+                    for (final m in messages.where(
+                      (m) =>
+                          m.chatId == chat.id &&
+                          m.senderId == me!.id &&
+                          m.kind == 'text' &&
+                          (receipt['ids'] as List).contains(m.id),
+                    )) {
+                      final next = Delivery.values.byName(receipt['state']);
+                      if (next.index > m.delivery.index ||
+                          m.delivery == Delivery.failed) {
+                        m.delivery = next;
+                      }
+                    }
+                  } else if ((content['kind'] ?? 'text') == 'text') {
+                    if (activeChat != chat.id) chat.unread++;
+                    _queueReceipt(
+                      chat.id,
+                      [row['client_message_id'] as String],
+                      activeChat == chat.id && readReceipts
+                          ? 'read'
+                          : 'delivered',
+                    );
+                    if (activeChat == chat.id && readReceipts) {
+                      messages
+                              .firstWhere((m) => m.serverId == row['id'])
+                              .delivery =
+                          Delivery.read;
+                    }
+                  } else {
+                    throw StateError('Unsupported event');
+                  }
                   await persist(); // Commit received plaintext + ratchet before advancing cursor or ACK.
                 } catch (_) {
+                  messages.removeRange(beforeLength, messages.length);
+                  chat.unread = unread;
+                  for (final m in messages) {
+                    m.delivery = statuses[m.id]!;
+                  }
                   signalStore = PersistentSignalStore(
                     Map<String, dynamic>.from(jsonDecode(before)),
                   );
@@ -325,6 +413,9 @@ class ChatController extends ChangeNotifier {
     } catch (_) {
       offline = true;
       _attempt = min(_attempt + 1, 6);
+      _nextRetry = DateTime.now().add(
+        Duration(seconds: min(120, 1 << _attempt) + Random.secure().nextInt(4)),
+      );
     } finally {
       _syncing = false;
       if (!_disposed) notifyListeners();
@@ -333,10 +424,12 @@ class ChatController extends ChangeNotifier {
 
   Future<void> send(Conversation chat, String text) async {
     final body = text.trim();
+    final owner = me?.id;
     if (body.isEmpty || body.length > 10000 || blocked.contains(chat.peer.id)) {
       return;
     }
     await _exclusive(() async {
+      if (me?.id != owner) return;
       messages.add(
         ChatMessage(
           id: const Uuid().v4(),
@@ -347,7 +440,12 @@ class ChatController extends ChangeNotifier {
         ),
       );
       drafts.remove(chat.id);
-      await persist();
+      try {
+        await persist();
+      } catch (_) {
+        messages.removeLast();
+        rethrow;
+      }
       notifyListeners();
     });
     if (!preview) await sync();
@@ -366,7 +464,12 @@ class ChatController extends ChangeNotifier {
         final bundle = Map<String, dynamic>.from(
           await client!.rpc(
             'get_prekey_bundle',
-            params: {'peer': chat.peer.id},
+            params: {
+              'peer': chat.peer.id,
+              'consume': !await signalStore!.containsSession(
+                SignalProtocolAddress(chat.peer.id, 1),
+              ),
+            },
           ),
         );
         final snapshot = jsonEncode(signalStore!.data);
@@ -379,6 +482,7 @@ class ChatController extends ChangeNotifier {
               'sender': me!.id,
               'id': m.id,
               'text': m.text,
+              'kind': m.kind,
             }),
           );
           await persist(); // Atomic ratchet + envelope. Retry always uses this envelope.
@@ -387,6 +491,7 @@ class ChatController extends ChangeNotifier {
             Map<String, dynamic>.from(jsonDecode(snapshot)),
           );
           m.delivery = Delivery.failed;
+          m.envelope = null;
           rethrow;
         }
         final result = await client!
@@ -400,6 +505,7 @@ class ChatController extends ChangeNotifier {
             )
             .timeout(const Duration(seconds: 20));
         m.serverId = result['id'];
+        m.at = DateTime.parse(result['created_at']);
         m.delivery = Delivery.sent;
         await persist();
       } on PostgrestException catch (e) {
@@ -409,6 +515,44 @@ class ChatController extends ChangeNotifier {
         rethrow;
       }
     }
+  }
+
+  void _queueReceipt(String chat, List<String> ids, String state) {
+    messages.add(
+      ChatMessage(
+        id: const Uuid().v4(),
+        chatId: chat,
+        senderId: me!.id,
+        text: jsonEncode({'ids': ids, 'state': state}),
+        at: DateTime.now(),
+        kind: 'receipt',
+      ),
+    );
+  }
+
+  Future<void> markRead(Conversation chat) async {
+    chat.unread = 0;
+    if (preview || !readReceipts) return;
+    await _exclusive(() async {
+      final unread = messages
+          .where(
+            (m) =>
+                m.chatId == chat.id &&
+                m.senderId == chat.peer.id &&
+                m.kind == 'text' &&
+                m.delivery != Delivery.read,
+          )
+          .toList();
+      for (var start = 0; start < unread.length; start += 50) {
+        final chunk = unread.skip(start).take(50).toList();
+        _queueReceipt(chat.id, chunk.map((m) => m.id).toList(), 'read');
+        for (final m in chunk) {
+          m.delivery = Delivery.read;
+        }
+      }
+      await persist();
+    });
+    await sync();
   }
 
   Future<List<Person>> searchPeople(String query) async {
@@ -489,6 +633,7 @@ class ChatController extends ChangeNotifier {
 
   void _clear() {
     _timer?.cancel();
+    _draftTimer?.cancel();
     if (_channel != null) {
       client?.removeChannel(_channel!);
       _channel = null;
@@ -501,6 +646,8 @@ class ChatController extends ChangeNotifier {
     cursors.clear();
     blocked.clear();
     signalStore = null;
+    offline = false;
+    _attempt = 0;
     error = null;
     activeChat = null;
   }
@@ -522,7 +669,7 @@ class ChatController extends ChangeNotifier {
     ];
     const snippets = [
       'Sampai ketemu besok, ya!',
-      'Terima kasih! Sampai nanti 👋',
+      'Terima kasih! Sampai nanti.',
       'Ide yang bagus. Kita bahas nanti?',
       'Oke, aku tunggu kabarnya.',
     ];
@@ -550,7 +697,7 @@ class ChatController extends ChangeNotifier {
             id: 'sample-0-2',
             chatId: chat.id,
             senderId: 'preview',
-            text: 'Baik! Senang akhirnya punya tempat ngobrol di sini ✨',
+            text: 'Baik! Senang akhirnya punya tempat ngobrol di sini.',
             at: DateTime.now().subtract(const Duration(minutes: 10)),
             delivery: Delivery.read,
           ),
@@ -574,6 +721,7 @@ class ChatController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _timer?.cancel();
+    _draftTimer?.cancel();
     _auth?.cancel();
     if (_channel != null) client?.removeChannel(_channel!);
     super.dispose();

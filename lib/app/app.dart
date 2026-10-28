@@ -11,6 +11,7 @@ class AdoetzApp extends StatelessWidget {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) => MaterialApp(
+      key: ValueKey(controller.me?.id ?? 'signed-out'),
       title: 'Adoetz Chat',
       debugShowCheckedModeBanner: false,
       theme: adoetzTheme(Brightness.light),
