@@ -86,4 +86,52 @@ do $$ begin
  if exists(select 1 from private.device_prekeys where device_id='10000000-0000-4000-8000-000000000001' and key_id=1) then raise exception 'Login resurrected consumed prekey'; end if;
  if (select count(*) from private.push_jobs where kind='message')<>2 then raise exception 'Push did not fan out'; end if;
 end $$;
+-- Backup RPCs expose only the current account's encrypted archives.
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000001',true);
+select set_config('request.jwt.claims','{"session_id":"90000000-0000-4000-8000-000000000001"}',true);
+do $$ declare result jsonb; envelope jsonb:=jsonb_build_object('algorithm','pbkdf2-sha256-aes256gcm-v1',
+ 'key_id','50000000-0000-4000-8000-000000000001','salt',repeat('A',24),'iterations',600000,
+ 'wrapped',jsonb_build_object('nonce',repeat('B',16),'mac',repeat('C',24),'ciphertext',repeat('D',44)));
+begin
+ result:=public.history_backup('10000000-0000-4000-8000-000000000001','key',envelope);
+ if result->'key'->>'key_id'<>envelope->>'key_id' then raise exception 'Key creation failed'; end if;
+ perform public.history_backup('10000000-0000-4000-8000-000000000001','save',jsonb_build_object('key_id',envelope->>'key_id','ciphertext',repeat('A',64),'source_revision',2));
+ perform public.history_backup('10000000-0000-4000-8000-000000000001','save',jsonb_build_object('key_id',envelope->>'key_id','ciphertext',repeat('B',64),'source_revision',1));
+ result:=public.history_backup('10000000-0000-4000-8000-000000000001','get',null);
+ if result->'archives'->0->>'ciphertext'<>repeat('A',64) then raise exception 'Stale background archive replaced newer history'; end if;
+ begin
+  perform public.history_backup('10000000-0000-4000-8000-000000000001','rekey',envelope);
+  raise exception 'Missing CAS revision accepted' using errcode='XX000';
+ exception when serialization_failure then null; end;
+ begin
+  perform public.history_backup('10000000-0000-4000-8000-000000000001','key','{}');
+  raise exception 'Malformed key accepted' using errcode='XX000';
+ exception when raise_exception then null; end;
+end $$;
+select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000002',true);
+select set_config('request.jwt.claims','{"session_id":"90000000-0000-4000-8000-000000000003"}',true);
+do $$ declare result jsonb; begin
+ result:=public.history_backup('10000000-0000-4000-8000-000000000003','get',null);
+ if result->'key'<>'null'::jsonb or jsonb_array_length(result->'archives')<>0 then raise exception 'Another account archive leaked'; end if;
+ begin
+  perform public.history_backup('10000000-0000-4000-8000-000000000001','get',null);
+  raise exception 'Another account device accepted' using errcode='XX000';
+ exception when insufficient_privilege then null; end;
+ begin
+  perform 1 from private.history_keys;
+  raise exception 'Private backup keys directly readable' using errcode='XX000';
+ exception when insufficient_privilege then null; end;
+end $$;
+reset role;
+-- The worker expires calls without either application running and retains logs.
+update public.calls set status='ringing',callee_device=null,expires_at=now()-interval '1 second'
+ where id='30000000-0000-4000-8000-000000000001';
+set local role service_role;
+select public.adoetz_claim_push_jobs();
+reset role;
+do $$ begin
+ if (select status from public.calls where id='30000000-0000-4000-8000-000000000001')<>'missed' then raise exception 'Closed-app call log not expired'; end if;
+ if (select count(*) from private.push_jobs where kind='call_end')<>2 then raise exception 'Call-end notifications did not fan out'; end if;
+end $$;
 rollback;

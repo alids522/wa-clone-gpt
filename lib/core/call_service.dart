@@ -8,9 +8,10 @@ import 'package:uuid/uuid.dart';
 import 'controller.dart';
 import 'models.dart';
 
-class CallService extends ChangeNotifier {
+class CallService extends ChangeNotifier with WidgetsBindingObserver {
   CallService(this.controller) {
     _instances[controller] = this;
+    WidgetsBinding.instance.addObserver(this);
     _events = controller.events.stream.listen((_) => _processSignals());
     _native = FlutterCallkitIncoming.onEvent.listen((event) {
       if (event is CallEventActionCallAccept) {
@@ -20,7 +21,7 @@ class CallService extends ChangeNotifier {
         decline(event.callKitParams.id).catchError(_failure);
       }
       if (event is CallEventActionCallEnded && event.callKitParams.id == id) {
-        end().catchError(_failure);
+        _endedFromNative().catchError(_failure);
       }
       if (event is CallEventActionCallTimeout && event.id == id) {
         end().catchError(_failure);
@@ -93,6 +94,24 @@ class CallService extends ChangeNotifier {
       }
       await _poll();
     } catch (_) {}
+  }
+
+  Future<void> _endedFromNative() async {
+    if (id == null || !active) return;
+    final row = await _action('get');
+    if (row['caller_device'] != controller.deviceId &&
+        row['callee_device'] != controller.deviceId) {
+      state = 'ended';
+      await _release();
+      _notify();
+      return;
+    }
+    await end();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_disposed) _restoreNative();
   }
 
   void _failure(Object _) {
@@ -213,7 +232,11 @@ class CallService extends ChangeNotifier {
       _row = await _action('accept');
       await controller.sync();
       ChatMessage? offer;
-      for (var attempt = 0; attempt < 8 && offer == null; attempt++) {
+      for (
+        var attempt = 0;
+        attempt < 30 && offer == null && active;
+        attempt++
+      ) {
         offer = controller.messages
             .where(
               (m) =>
@@ -633,6 +656,7 @@ class CallService extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _events?.cancel();
     _native?.cancel();

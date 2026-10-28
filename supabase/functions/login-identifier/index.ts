@@ -10,6 +10,10 @@ Deno.serve(async request => {
     const { data: email } = await service.rpc('adoetz_login_lookup', { identifier: input.identifier });
     const { data, error } = await auth.auth.signInWithPassword({ email: email ?? 'unavailable@example.invalid', password: input.password });
     if (error || !data.session || !email) return json({ error: 'Invalid credentials' }, 401);
+    if (input.verify_only === true) {
+      await auth.auth.signOut({ scope: 'local' });
+      return json({ ok: true });
+    }
     return json({ refresh_token: data.session.refresh_token });
   } catch { return json({ error: 'Sign in unavailable. Try again later.' }, 429); }
 });

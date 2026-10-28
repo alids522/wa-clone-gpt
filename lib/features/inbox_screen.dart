@@ -12,6 +12,7 @@ import '../core/models.dart';
 import 'chat_screen.dart';
 import 'people_screen.dart';
 import 'settings_screen.dart';
+import 'call_history_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.controller});
@@ -20,13 +21,14 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   CallService? calls;
   StreamSubscription<String>? _navigation;
   bool _callVisible = false;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (!widget.controller.preview) {
       calls = CallService(widget.controller)..onShow = _showCall;
       _navigation = PushService.navigation.stream.listen(_openNotification);
@@ -61,9 +63,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _navigation?.cancel();
     calls?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !widget.controller.preview) {
+      PushService.refreshCallPermission();
+    }
   }
 
   int tab = 0, filter = 0;
@@ -114,7 +124,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 5),
               Text(
-                ['Percakapan', 'Kontak', 'Pengaturan'][tab],
+                ['Percakapan', 'Kontak', 'Panggilan', 'Pengaturan'][tab],
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -129,14 +139,14 @@ class _HomeScreenState extends State<HomeScreen> {
             if (!c.preview)
               IconButton(
                 tooltip: 'Riwayat panggilan',
-                onPressed: _callHistory,
+                onPressed: () => setState(() => tab = 2),
                 icon: const Icon(Icons.call_outlined),
               ),
             Padding(
               padding: const EdgeInsets.only(right: 18),
               child: IconButton(
                 tooltip: 'Profil dan pengaturan',
-                onPressed: () => setState(() => tab = 2),
+                onPressed: () => setState(() => tab = 3),
                 icon: Avatar(c.me!, radius: 20),
               ),
             ),
@@ -227,6 +237,35 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
               ),
+            if (!c.preview)
+              ValueListenableBuilder<bool>(
+                valueListenable: PushService.fullScreenAllowed,
+                builder: (context, allowed, _) => allowed
+                    ? const SizedBox.shrink()
+                    : Material(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 16, right: 8),
+                          child: Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'Izinkan layar panggilan saat HP terkunci.',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: () =>
+                                    PushService.refreshCallPermission(
+                                      request: true,
+                                    ),
+                                child: const Text('Aktifkan'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+              ),
             if (c.preview || c.offline)
               Container(
                 width: double.infinity,
@@ -266,6 +305,8 @@ class _HomeScreenState extends State<HomeScreen> {
               child: tab == 1
                   ? PeopleScreen(controller: c)
                   : tab == 2
+                  ? CallHistoryScreen(controller: c, service: calls)
+                  : tab == 3
                   ? SettingsScreen(controller: c)
                   : Column(
                       children: [
@@ -529,6 +570,11 @@ class _HomeScreenState extends State<HomeScreen> {
               label: 'Kontak',
             ),
             NavigationDestination(
+              icon: Icon(Icons.call_outlined),
+              selectedIcon: Icon(Icons.call),
+              label: 'Panggilan',
+            ),
+            NavigationDestination(
               icon: Icon(Icons.settings_outlined),
               selectedIcon: Icon(Icons.settings_rounded),
               label: 'Pengaturan',
@@ -537,70 +583,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
-  }
-
-  Future<void> _callHistory() async {
-    try {
-      final c = widget.controller;
-      final rows = await c.client!
-          .from('calls')
-          .select()
-          .order('created_at', ascending: false)
-          .limit(50);
-      if (!mounted) return;
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        builder: (context) => SafeArea(
-          child: SizedBox(
-            height: MediaQuery.sizeOf(context).height * .7,
-            child: rows.isEmpty
-                ? const EmptyState(
-                    icon: Icons.call_outlined,
-                    title: 'Belum ada panggilan',
-                    body: 'Riwayat panggilan akan tampil di sini.',
-                  )
-                : ListView(
-                    children: [
-                      const SectionLabel('Riwayat panggilan'),
-                      for (final row in rows)
-                        ListTile(
-                          leading: Icon(
-                            row['video'] == true
-                                ? Icons.videocam_outlined
-                                : Icons.call_outlined,
-                          ),
-                          title: Text(
-                            c.chats
-                                    .where(
-                                      (r) => r.id == row['conversation_id'],
-                                    )
-                                    .firstOrNull
-                                    ?.peer
-                                    .name ??
-                                'Kontak',
-                          ),
-                          subtitle: Text(
-                            '${row['status']} · ${DateTime.parse(row['created_at']).toLocal().toString().substring(0, 16)}',
-                          ),
-                          onTap: () {
-                            final room = c.chats
-                                .where((r) => r.id == row['conversation_id'])
-                                .firstOrNull;
-                            Navigator.pop(context);
-                            if (room != null) {
-                              calls?.start(room, withVideo: row['video']);
-                            }
-                          },
-                        ),
-                    ],
-                  ),
-          ),
-        ),
-      );
-    } catch (_) {
-      if (mounted) showNotice(context, 'Riwayat panggilan belum dapat dimuat.');
-    }
   }
 
   String _time(DateTime t) {

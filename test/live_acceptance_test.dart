@@ -245,6 +245,41 @@ void main() {
             'reason': 'Automated acceptance fixture; no chat content attached',
           },
         );
+        // A fresh vault/device is the reinstall/clear-data case. Restore only
+        // history and attachment keys, never the old identity or ratchet.
+        final oldDevice = phone.deviceId;
+        final oldIdentity = (await phone.signalStore!
+            .publicBundle())['identity_key'];
+        await phone.unlockHistory(
+          users[0]['password'],
+          authenticatedPassword: true,
+        );
+        await phone.backupNow();
+        final beforeRestore = phone.inChat(room.id);
+        expect(beforeRestore, isNotEmpty);
+        final restored = await open(0, background: true);
+        expect(restored.deviceId, isNot(oldDevice));
+        expect(
+          (await restored.signalStore!.publicBundle())['identity_key'],
+          isNot(oldIdentity),
+        );
+        await restored.unlockHistory(
+          users[0]['password'],
+          authenticatedPassword: true,
+        );
+        expect(
+          restored.inChat(room.id).map((m) => m.id).toSet(),
+          containsAll(beforeRestore.map((m) => m.id)),
+        );
+        final logs = await restored.client!
+            .from('calls')
+            .select()
+            .eq('id', callId);
+        expect(
+          logs.single['status'],
+          'ended',
+          reason: 'Call logs survive clearing device storage',
+        );
         expect(failures, isEmpty);
       } finally {
         for (final c in controllers) {

@@ -19,6 +19,12 @@
         android:usesCleartextTraffic="false"
         android:name="${applicationName}"
         android:icon="@drawable/ic_adoetz">
+        <receiver android:name=".IncomingCallReceiver" android:exported="true"
+            android:permission="com.google.android.c2dm.permission.SEND">
+            <intent-filter android:priority="1000">
+                <action android:name="com.google.android.c2dm.intent.RECEIVE" />
+            </intent-filter>
+        </receiver>
         <activity
             android:name=".MainActivity"
             android:exported="true"

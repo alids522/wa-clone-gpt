@@ -5,6 +5,7 @@ import 'core/controller.dart';
 import 'core/vault.dart';
 import 'core/push_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:firebase_core/firebase_core.dart';
 
 Future<void> main() async {
@@ -13,6 +14,7 @@ Future<void> main() async {
     try {
       await Firebase.initializeApp();
       FirebaseMessaging.onBackgroundMessage(backgroundPush);
+      await FlutterCallkitIncoming.onBackgroundMessage(backgroundCallAction);
       await PushService.initialize();
     } catch (_) {
       PushService.status.value = PushState.setupFailed;

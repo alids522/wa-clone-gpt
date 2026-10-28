@@ -6,6 +6,7 @@ import 'admin_screen.dart';
 import 'devices_screen.dart';
 import 'password_screen.dart';
 import 'notification_settings.dart';
+import 'backup_screen.dart';
 import '../core/media_service.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -109,6 +110,23 @@ class SettingsScreen extends StatelessWidget {
           ),
         ),
         const SectionLabel('Privasi & keamanan'),
+        if (!c.preview)
+          ListTile(
+            leading: const Icon(Icons.enhanced_encryption_outlined),
+            title: const Text('Backup & riwayat chat'),
+            subtitle: Text(
+              c.backupReady
+                  ? 'Backup terenkripsi otomatis aktif'
+                  : 'Aktifkan sebelum hapus data / reinstall',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => BackupScreen(controller: c),
+              ),
+            ),
+          ),
         if (!c.preview)
           SwitchListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 16),

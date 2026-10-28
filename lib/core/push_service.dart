@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
+import 'package:device_runtime/device_runtime.dart';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -7,10 +8,84 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
 import 'package:flutter_callkit_incoming/entities/android_params.dart';
+import 'package:flutter_callkit_incoming/entities/call_event.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'controller.dart';
 import 'models.dart';
 import 'vault.dart';
+
+Future<SupabaseClient> _backgroundClient() async {
+  const vault = DeviceVault();
+  final raw = await vault.read('auth_session');
+  if (raw == null) throw StateError('Signed out');
+  // Callkit can reuse its headless engine for more than one action.
+  try {
+    final client = Supabase.instance.client;
+    await client.auth.recoverSession(raw);
+    return client;
+  } catch (_) {}
+  await Supabase.initialize(
+    url: const String.fromEnvironment('SUPABASE_URL'),
+    publishableKey: const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY'),
+    authOptions: FlutterAuthClientOptions(
+      localStorage: SecureSessionStorage(vault),
+    ),
+  );
+  return Supabase.instance.client;
+}
+
+@pragma('vm:entry-point')
+Future<void> backgroundCallAction(CallEvent event) async {
+  String? id, operation;
+  if (event is CallEventActionCallDecline) {
+    id = event.callKitParams.id;
+    operation = 'decline';
+  }
+  if (event is CallEventActionCallTimeout) {
+    id = event.id;
+    operation = 'get';
+  }
+  if (event is CallEventActionCallEnded) {
+    id = event.callKitParams.id;
+    operation = 'end';
+  }
+  // Accept launches the authenticated foreground call service; never open media here.
+  if (id == null) return;
+  try {
+    final client = await _backgroundClient();
+    final owner = client.auth.currentUser?.id;
+    if (owner == null) return;
+    final state = await readJson(const DeviceVault(), 'account_$owner');
+    if (state['device_id'] == null) return;
+    if (operation == 'end') {
+      final row = await client
+          .rpc(
+            'call_action',
+            params: {
+              'call_id': id,
+              'device': state['device_id'],
+              'operation': 'get',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
+      // Closing a losing device's native popup must not hang up the winner.
+      if (row['caller_device'] != state['device_id'] &&
+          row['callee_device'] != state['device_id']) {
+        return;
+      }
+    }
+    await client
+        .rpc(
+          'call_action',
+          params: {
+            'call_id': id,
+            'device': state['device_id'],
+            'operation': operation,
+          },
+        )
+        .timeout(const Duration(seconds: 8));
+  } catch (_) {}
+}
 
 @pragma('vm:entry-point')
 Future<void> backgroundPush(RemoteMessage message) async {
@@ -29,6 +104,39 @@ Future<void> backgroundPush(RemoteMessage message) async {
       ),
     );
     initialized = true;
+    // Ring/close before account registration, ratchet locking or inbox catch-up.
+    // Native FCM normally rings first; this also handles older payloads safely.
+    if (message.data['kind'] == 'call' || message.data['kind'] == 'call_end') {
+      final client = Supabase.instance.client;
+      final uid = client.auth.currentUser?.id;
+      if (uid == null) return;
+      final state = await readJson(vault, 'account_$uid');
+      final device = state['device_id'] as String?;
+      if (device == null) return;
+      final id = message.data['event_id'];
+      if (id == null) return;
+      final row = Map<String, dynamic>.from(
+        await client
+            .rpc(
+              'call_action',
+              params: {'call_id': id, 'device': device, 'operation': 'get'},
+            )
+            .timeout(const Duration(seconds: 8)),
+      );
+      if (message.data['kind'] == 'call') {
+        if (row['status'] == 'ringing') {
+          await PushService.showIncomingRow(row, uid);
+        } else if (row['callee_device'] != device ||
+            !['connecting', 'connected'].contains(row['status'])) {
+          await FlutterCallkitIncoming.endCall(id);
+        }
+      } else if (row['status'] != 'ringing' &&
+          (row['callee_device'] != device ||
+              !['connecting', 'connected'].contains(row['status']))) {
+        await FlutterCallkitIncoming.endCall(id);
+      }
+      return;
+    }
     controller = ChatController(
       vault: vault,
       client: Supabase.instance.client,
@@ -43,11 +151,9 @@ Future<void> backgroundPush(RemoteMessage message) async {
     // Commit decrypted inbox + ratchet before a real encrypted delivered receipt.
     // A background handler never marks messages as read.
     await controller.initialize(syncOnOpen: false);
-    if (message.data['kind'] == 'call' && controller.me != null) {
-      await PushService.showIncoming(controller, message.data['event_id']!);
-    }
     await controller.sync();
     await Future.wait(shown);
+    await controller.backupNow();
   } catch (_) {
     // Failed decryption/auth/network must never fabricate a delivered receipt.
   } finally {
@@ -70,6 +176,7 @@ enum PushState {
 class PushService {
   static const configured = bool.fromEnvironment('FIREBASE_ENABLED');
   static final allowed = ValueNotifier<bool>(false);
+  static final fullScreenAllowed = ValueNotifier<bool>(true);
   static final status = ValueNotifier<PushState>(PushState.idle);
   static String diagnosticCode = '';
   static Future<void>? _initializing;
@@ -200,13 +307,23 @@ class PushService {
               },
             )
             .timeout(const Duration(seconds: 15));
+        if (current() && controller.vault is DeviceVault) {
+          await DeviceRuntime.configureCallPush(device);
+        }
       }
 
       await _refresh?.cancel();
       await _foreground?.cancel();
       await _events?.cancel();
-      _foreground = FirebaseMessaging.onMessage.listen((_) {
-        if (current()) controller.sync();
+      _foreground = FirebaseMessaging.onMessage.listen((message) {
+        if (!current()) return;
+        if (message.data['kind'] == 'call') {
+          showIncoming(
+            controller,
+            message.data['event_id']!,
+          ).catchError((Object _) {});
+        }
+        controller.sync();
       });
       _events = controller.events.stream.listen((item) {
         if (current()) showMessage(controller, item).catchError((Object _) {});
@@ -237,6 +354,7 @@ class PushService {
       if (!current()) return false;
       allowed.value = permitted;
       status.value = permitted ? PushState.ready : PushState.permissionNeeded;
+      await refreshCallPermission();
       return permitted;
     } catch (e) {
       if (!current()) return false;
@@ -250,6 +368,18 @@ class PushService {
         if (current()) restore(controller).catchError((Object _) {});
       });
       return false;
+    }
+  }
+
+  static Future<void> refreshCallPermission({bool request = false}) async {
+    try {
+      fullScreenAllowed.value =
+          await FlutterCallkitIncoming.canUseFullScreenIntent();
+      if (request && !fullScreenAllowed.value) {
+        await FlutterCallkitIncoming.requestFullIntentPermission();
+      }
+    } catch (_) {
+      fullScreenAllowed.value = false;
     }
   }
 
@@ -309,9 +439,22 @@ class PushService {
       'call_action',
       params: {'call_id': id, 'device': c.deviceId, 'operation': 'get'},
     );
+    await showIncomingRow(Map<String, dynamic>.from(row), c.me!.id);
+  }
+
+  static Future<void> showIncomingRow(
+    Map<String, dynamic> row,
+    String owner,
+  ) async {
     if (row['status'] != 'ringing' ||
-        row['caller_id'] == c.me?.id ||
+        row['caller_id'] == owner ||
         DateTime.parse(row['expires_at']).isBefore(DateTime.now())) {
+      return;
+    }
+    final id = row['id'] as String;
+    if ((await FlutterCallkitIncoming.activeCalls()).any(
+      (call) => call.id == id,
+    )) {
       return;
     }
     await FlutterCallkitIncoming.showCallkitIncoming(
@@ -339,6 +482,9 @@ class PushService {
   }
 
   static Future<void> stop({ChatController? controller}) async {
+    if (controller?.vault is DeviceVault) {
+      await DeviceRuntime.configureCallPush(null);
+    }
     _retry?.cancel();
     allowed.value = false;
     status.value = PushState.idle;

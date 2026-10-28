@@ -122,6 +122,12 @@ public final class DeviceRuntimePlugin implements FlutterPlugin, MethodChannel.M
                         });
                 } catch (Exception e) { authentication=null; if(completed.compareAndSet(false,true)) result.success(false); }
             }
+            else if (call.method.equals("callPush")) {
+                android.content.SharedPreferences.Editor edit=context.getSharedPreferences("adoetz_call_push",Context.MODE_PRIVATE).edit();
+                if(call.arguments instanceof String) edit.putString("device",(String)call.arguments);
+                else edit.clear();
+                result.success(edit.commit());
+            }
             else if (call.method.equals("flush")) {
                 // The pinned storage provider uses apply(). Android commit() on
                 // the same preferences waits for outstanding asynchronous writes.

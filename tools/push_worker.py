@@ -18,4 +18,4 @@ while True:
             print(json.dumps(result), flush=True)
     except (OSError, ValueError):
         print('Push worker will retry', flush=True)
-    time.sleep(5)
+    time.sleep(2)

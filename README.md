@@ -3,7 +3,7 @@
 Android-first Flutter messenger based on `Adoetz_Chat_PRD_v1.0.md`.
 Application ID: `com.adoetzchat.messenger`. Android 10+. Flutter 3.44.1 / Dart 3.12.1.
 
-**0.3.0 is an internal technical prototype. Independent security review and physical-device acceptance remain release gates.**
+**0.4.0 is an internal technical prototype. Independent security review and physical-device acceptance remain release gates.**
 
 ## Implemented features
 
@@ -102,7 +102,7 @@ Backend CI creates an isolated PostgreSQL 17 database, applies the actual migrat
 
 ## Remaining PRD gates
 
-See `docs/implementation-status.md` and `docs/security.md` for evidence and remaining acceptance gates. Update every participating device to 0.3.0 using the stable signed APK, without uninstalling or clearing app data. Original 0.1.0 history remains readable on its original device; a newly added device receives future messages and does not receive old private keys from the server. Group chat and encrypted backup remain the PRD's P2 scope.
+See `docs/implementation-status.md` and `docs/security.md` for evidence and remaining acceptance gates. Update every participating device to 0.4.0 using the stable signed APK. Enable the encrypted history backup in Settings before clearing data or reinstalling. Fresh sign-ins automatically unlock/restore it with the login password. Existing history without a backup still requires a device that retains it. Group chat remains P2. See [history and calls](docs/history-and-calls.md).
 
 The selected Signal dependency uses GPL-3.0. See `THIRD_PARTY_NOTICES.md`; confirm distribution licensing before a release. No security audit or production readiness is claimed.
 

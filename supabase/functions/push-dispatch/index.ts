@@ -29,22 +29,29 @@ Deno.serve(async request => {
     const credential = await credentials(value => stage = value);
     stage = 'storage-cleanup';
     const { service } = clients();
-    const orphans = await service.rpc('adoetz_orphan_media');
-    if (!orphans.error) {
-      for (const object of orphans.data as Array<{ bucket_id: string; name: string }>) {
-        await service.storage.from(object.bucket_id).remove([object.name]);
-      }
-    }
     stage = 'queue';
     const jobs = await service.rpc('adoetz_claim_push_jobs');
     if (jobs.error) throw Error('Queue unavailable');
     let sent = 0, removed = 0, retry = 0;
-    await Promise.all((jobs.data as Array<{ id: number; token: string; event_id: string; kind: string; created_at: string }>).map(async job => {
+    await Promise.all((jobs.data as Array<{ id: number; device_id: string; token: string; event_id: string; kind: string; created_at: string }>).map(async job => {
       if (job.kind === 'call' && Date.now() - Date.parse(job.created_at) > 45000) {
         await service.rpc('adoetz_finish_push_job', { job: job.id }); removed++; return;
       }
       try {
-        const response = await fetch(`https://fcm.googleapis.com/v1/projects/${credential.project}/messages:send`, { method: 'POST', headers: { Authorization: `Bearer ${credential.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { token: job.token, data: { event_id: job.event_id, kind: job.kind }, android: { priority: 'HIGH', ttl: job.kind === 'call' ? '45s' : '86400s' } } }), signal: AbortSignal.timeout(10000) });
+        const data: Record<string, string> = { event_id: job.event_id, kind: job.kind, device: job.device_id };
+        let ttl = job.kind === 'message' ? '86400s' : '45s';
+        if (job.kind === 'call') {
+          const { data: call, error } = await service.from('calls').select('status,expires_at,video').eq('id', job.event_id).single();
+          if (error) { retry++; return; }
+          const remaining = Math.floor((Date.parse(call.expires_at) - Date.now()) / 1000);
+          if (call.status !== 'ringing' || remaining <= 0) {
+            await service.rpc('adoetz_finish_push_job', { job: job.id }); removed++; return;
+          }
+          data.expires_at = call.expires_at;
+          data.video = String(call.video);
+          ttl = `${Math.min(45, remaining)}s`;
+        }
+        const response = await fetch(`https://fcm.googleapis.com/v1/projects/${credential.project}/messages:send`, { method: 'POST', headers: { Authorization: `Bearer ${credential.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: { token: job.token, data, android: { priority: 'HIGH', ttl } } }), signal: AbortSignal.timeout(10000) });
         if (response.ok) { await service.rpc('adoetz_finish_push_job', { job: job.id }); sent++; }
         else {
           const result = await response.json();
@@ -54,6 +61,12 @@ Deno.serve(async request => {
         }
       } catch { retry++; }
     }));
+    // Storage housekeeping must never delay the time-sensitive ringing queue.
+    const orphans = await service.rpc('adoetz_orphan_media');
+    if (!orphans.error) {
+      await Promise.all((orphans.data as Array<{ bucket_id: string; name: string }>).map(
+        object => service.storage.from(object.bucket_id).remove([object.name])));
+    }
     return json({ sent, removed, retry });
   } catch (error) { return json({ error: 'Push dispatch unavailable', stage, error_type: error instanceof Error ? error.name : 'unknown' }, 503); }
 });

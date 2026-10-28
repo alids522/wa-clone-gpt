@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -12,6 +13,7 @@ import 'package:adoetz_chat/core/vault.dart';
 import 'package:adoetz_chat/core/models.dart';
 import 'package:adoetz_chat/features/call_screen.dart';
 import 'package:adoetz_chat/features/chat_screen.dart';
+import 'package:adoetz_chat/features/inbox_screen.dart';
 import 'package:adoetz_chat/features/media_widgets.dart';
 
 const previewKey = Key('ui-capture');
@@ -95,6 +97,56 @@ void main() {
       await tester.binding.handlePopRoute();
       await tester.pump();
       expect(backgrounded, 1);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+
+  testWidgets(
+    'Calls tab shows persistent cached logs and remains usable at 200 percent text',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      tester.view.physicalSize = const Size(360, 740);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final vault = MemoryVault();
+      final c = ChatController(vault: vault)..openPreview();
+      await vault.write(
+        'call_log_preview',
+        jsonEncode([
+          {
+            'id': 'call-fixture',
+            'conversation_id': c.chats.first.id,
+            'caller_id': c.me!.id,
+            'video': true,
+            'status': 'ended',
+            'created_at': '2026-10-28T10:00:00Z',
+            'expires_at': '2026-10-28T10:01:00Z',
+            'connected_at': '2026-10-28T10:00:05Z',
+            'ended_at': '2026-10-28T10:01:07Z',
+          },
+        ]),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: adoetzTheme(Brightness.light),
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(360, 740),
+              textScaler: TextScaler.linear(2),
+            ),
+            child: HomeScreen(controller: c),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Panggilan').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Maya Putri'), findsOneWidget);
+      expect(find.textContaining('1 mnt 2 dtk'), findsOneWidget);
+      expect(find.byTooltip('Panggil video kembali'), findsOneWidget);
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
     },

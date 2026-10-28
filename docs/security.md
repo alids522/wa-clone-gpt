@@ -12,7 +12,7 @@ This remains a snapshot vault rather than a scalable encrypted history database.
 
 Each installation has its own Signal identity. New messages fan out to all observed active peer devices and the sender's other devices. TOFU pins individual identities; a changed identity fails closed. Safety numbers cover both accounts' active device-key sets and change when devices change. Signed prekeys rotate and old keys are retained for delayed messages; one-time prekeys replenish monotonically without restoring consumed IDs. Original 0.1 device IDs and ratchet addresses remain valid on upgrade, including devices first registered by old binaries during rollout.
 
-A new device cannot recover old keys/history from a password or an administrator. No key backup or transfer is implemented. The Dart Signal library and its integration have not received independent review; compatibility, licensing and cryptographic review remain production gates.
+Version 0.4.0 adds encrypted history archives wrapped with the login password at the owner's request. A fresh device restores message content and attachment keys without restoring old Signal identities or ratchets. Administrator resets do not decrypt an existing archive; the previous backup password is required. History without a prior archive still requires an installation that retains it. See [history and calls](history-and-calls.md) for the encryption parameters, concurrency rules and limits. The Dart Signal library and its integration have not received independent review; compatibility, licensing and cryptographic review remain production gates.
 
 ## Backend authorization
 
@@ -24,7 +24,7 @@ Username mappings and Firebase/service-role credentials are server-only. Login h
 
 ## Push and calls
 
-FCM data contains only opaque event IDs and event kinds, without message/file content or keys. The private worker authenticates to Firebase HTTP v1, retries durable jobs and removes unregistered tokens. Local notifications use generic copy. A push is a wake hint; delivered requires successful device decryption and durable storage. No permission or network means no guaranteed immediate notification; force-stop behavior must be tested on the actual OS/OEM.
+FCM data contains opaque event/device IDs and event kinds; incoming calls also include voice/video type and server expiry. No message/file content or keys are sent. The private worker authenticates to Firebase HTTP v1, retries durable jobs and removes unregistered tokens. Local notifications use generic copy. A push is a wake hint; delivered requires successful device decryption and durable storage. No permission or network means no guaranteed immediate notification; force-stop behavior must be tested on the actual OS/OEM.
 
 Call signaling travels through authenticated encrypted device messages. Server call state binds caller/callee devices and enforces first acceptance, timeout and busy status. TURN credentials require an active authorized call and expire after ten minutes. TURN relays media encrypted by WebRTC; it is not an admin media-decryption endpoint. Provider firewall ports and real microphone/camera/network-switching behavior are separate acceptance requirements.
 

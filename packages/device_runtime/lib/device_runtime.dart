@@ -14,6 +14,8 @@ class DeviceRuntime {
   static Future<bool> authenticate() async =>
       await _channel.invokeMethod<bool>('authenticate') ?? false;
   static Future<void> backgroundApp() => _channel.invokeMethod('background');
+  static Future<void> configureCallPush(String? device) =>
+      _channel.invokeMethod('callPush', device);
   static Future<Map<String, dynamic>> mediaPreview(
     String path,
     String mime,

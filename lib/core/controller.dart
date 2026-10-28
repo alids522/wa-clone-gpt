@@ -14,6 +14,7 @@ import 'push_service.dart';
 import 'signal_store.dart';
 import 'vault.dart';
 import 'streaming_storage.dart';
+import 'history_backup.dart';
 
 class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   ChatController({
@@ -62,6 +63,14 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   DateTime _uploadRetry = DateTime(2000);
   final StreamingStorage _uploader;
   String? activeChat;
+  HistoryBackup? _history;
+  Timer? _backupTimer;
+  Future<void>? _savingBackup;
+  bool backupBusy = false;
+  String backupStatus =
+      'Masuk kembali untuk mengaktifkan backup dengan password login.';
+  bool get backupReady => _history?.unlocked ?? false;
+  DateTime? get backupSavedAt => _history?.savedAt;
   bool foreground = true;
   String? get readingChat =>
       foreground && !background && !locked ? activeChat : null;
@@ -235,6 +244,15 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         await client!.auth.setSession(response.data['refresh_token']);
       }
       await _openAccount();
+      if (me != null) {
+        try {
+          await unlockHistory(password, authenticatedPassword: true);
+        } catch (_) {
+          // A reset login password must not silently replace an older archive.
+          backupStatus =
+              'Backup belum terbuka. Gunakan password backup sebelumnya di Pengaturan.';
+        }
+      }
     } on AuthException {
       error =
           'Username/email atau password tidak sesuai, atau kode undangan tidak dapat digunakan.';
@@ -346,6 +364,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     await _exclusive(_prepareAccount);
     if (passwordResetRequired || me == null) return;
     final uid = me!.id;
+    await _initializeHistory();
     if (background) {
       if (_syncOnOpen) await sync();
       return;
@@ -400,6 +419,213 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     await write;
     _revision++;
     _dirtyDrafts.removeWhere((key, value) => writtenDrafts[key] == value);
+    _backupTimer?.cancel();
+    if (!background && backupReady) {
+      _backupTimer = Timer(const Duration(seconds: 3), () {
+        backupNow().catchError((Object _) {});
+      });
+    }
+  }
+
+  Future<void> _initializeHistory() async {
+    final owner = me!.id, device = deviceId!;
+    final history = HistoryBackup(
+      owner: owner,
+      device: device,
+      vault: vault,
+      rpc: (operation, payload) async {
+        if (me?.id != owner ||
+            deviceId != device ||
+            client?.auth.currentUser?.id != owner) {
+          throw StateError('Akun berubah.');
+        }
+        return Map<String, dynamic>.from(
+          await client!
+              .rpc(
+                'history_backup',
+                params: {
+                  'device': device,
+                  'operation': operation,
+                  'payload': payload,
+                },
+              )
+              .timeout(const Duration(seconds: 20)),
+        );
+      },
+    );
+    _history = history;
+    try {
+      await history.loadLocal();
+      if (!background) await _mergeHistory(await history.open());
+      backupStatus = history.unlocked
+          ? 'Backup otomatis aktif.'
+          : 'Aktifkan backup dengan password login sebelum hapus data atau reinstall.';
+    } catch (_) {
+      backupStatus = 'Backup belum dapat disinkronkan. Coba lagi saat online.';
+    }
+  }
+
+  Future<void> unlockHistory(
+    String password, {
+    bool authenticatedPassword = false,
+    bool createIfMissing = true,
+  }) async {
+    if (password.isEmpty || preview || _history == null) {
+      throw StateError('Masukkan password login.');
+    }
+    final history = _history!, owner = me!.id;
+    backupBusy = true;
+    notifyListeners();
+    try {
+      final archives = await history.open(
+        password: password,
+        createIfMissing: createIfMissing,
+        beforeCreate: authenticatedPassword
+            ? null
+            : () async {
+                final result = await client!.functions.invoke(
+                  'login-identifier',
+                  body: {
+                    'identifier': me!.username,
+                    'password': password,
+                    'verify_only': true,
+                  },
+                );
+                if (result.data['ok'] != true) {
+                  throw StateError('Password login tidak sesuai.');
+                }
+              },
+      );
+      if (me?.id != owner || _history != history) return;
+      await _mergeHistory(archives);
+      await backupNow();
+    } catch (_) {
+      backupStatus =
+          'Backup belum terbuka. Periksa password; jika pernah direset, gunakan password sebelumnya.';
+      rethrow;
+    } finally {
+      backupBusy = false;
+      if (!_disposed && me?.id == owner) notifyListeners();
+    }
+  }
+
+  Future<void> _mergeHistory(List<Map<String, dynamic>> archives) async {
+    if (archives.isEmpty) return;
+    await _exclusive(() async {
+      final known = {for (final m in messages) m.id: m};
+      for (final archive in archives) {
+        for (final raw in archive['chats'] as List? ?? []) {
+          final room = Conversation.fromJson(Map<String, dynamic>.from(raw));
+          if (!chats.any((c) => c.id == room.id)) chats.add(room);
+        }
+        for (final raw in archive['messages'] as List? ?? []) {
+          final message = ChatMessage.fromJson(Map<String, dynamic>.from(raw));
+          if (![
+            'text',
+            'attachment',
+            'voice',
+            'control',
+          ].contains(message.kind)) {
+            continue;
+          }
+          final existing = known[message.id];
+          if (existing == null) {
+            messages.add(message);
+            known[message.id] = message;
+          } else if ([
+                Delivery.sent,
+                Delivery.delivered,
+                Delivery.read,
+              ].contains(message.delivery) &&
+              message.delivery.index > existing.delivery.index &&
+              existing.delivery != Delivery.failed) {
+            existing.delivery = message.delivery;
+          }
+        }
+        hidden.addAll(List<String>.from(archive['hidden'] ?? []));
+      }
+      await _commit();
+    });
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> backupNow() {
+    return _savingBackup ??= _saveHistory().whenComplete(
+      () => _savingBackup = null,
+    );
+  }
+
+  Future<void> matchBackupPassword(String password) async {
+    if (!backupReady || me == null) {
+      throw StateError('Buka backup sebelumnya dulu.');
+    }
+    final history = _history!, owner = me!.id;
+    final verified = await client!.functions.invoke(
+      'login-identifier',
+      body: {
+        'identifier': me!.username,
+        'password': password,
+        'verify_only': true,
+      },
+    );
+    if (verified.data['ok'] != true || me?.id != owner || _history != history) {
+      throw StateError('Password login tidak sesuai.');
+    }
+    await history.rewrap(password);
+    backupStatus = 'Backup otomatis aktif dan memakai password login saat ini.';
+    notifyListeners();
+  }
+
+  Future<void> _saveHistory() async {
+    final history = _history;
+    if (history == null || !history.unlocked || preview || me == null) return;
+    final owner = me!.id;
+    Map<String, dynamic>? snapshot;
+    var revision = 0;
+    await _exclusive(() async {
+      if (_history != history || me?.id != owner) return;
+      revision = _revision;
+      snapshot = {
+        'chats': chats.map((c) => c.toJson()).toList(),
+        'hidden': hidden.toList()..sort(),
+        'messages': messages
+            .where(
+              (m) =>
+                  ['text', 'attachment', 'voice', 'control'].contains(m.kind) &&
+                  m.serverId != null &&
+                  ![Delivery.queued, Delivery.failed].contains(m.delivery),
+            )
+            .map(
+              (m) => {
+                ...m.toJson(),
+                'envelope': null,
+                'data': {
+                  for (final e in m.data.entries)
+                    if (!e.key.startsWith('_')) e.key: e.value,
+                },
+              },
+            )
+            .toList(),
+      };
+      // Detach mutable data from subsequent ratchet/inbox transactions.
+      snapshot = Map<String, dynamic>.from(jsonDecode(jsonEncode(snapshot)));
+    });
+    if (snapshot == null) return;
+    try {
+      await history.save(snapshot!, revision: revision);
+      if (_history == history) {
+        backupStatus =
+            'Backup otomatis aktif. Riwayat tersimpan terenkripsi di server.';
+      }
+    } catch (_) {
+      if (_history == history) {
+        backupStatus =
+            'Backup belum tersimpan. Riwayat tetap di perangkat; coba lagi saat online.';
+      }
+      rethrow;
+    } finally {
+      if (!_disposed && me?.id == owner) notifyListeners();
+    }
   }
 
   Future<void> _exclusive(Future<void> Function() operation) {
@@ -1293,6 +1519,11 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     String? currentPassword,
   }) async {
     if (password.length < 12) throw StateError('Gunakan minimal 12 karakter.');
+    // Prepare the old archive key before changing credentials. The same random
+    // key is rewrapped, so other devices and all existing archives stay valid.
+    if (!passwordResetRequired && currentPassword != null && _history != null) {
+      await unlockHistory(currentPassword, createIfMissing: false);
+    }
     final result = await client!.functions.invoke(
       'account-password',
       body: {'new_password': password, 'current_password': ?currentPassword},
@@ -1305,6 +1536,18 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       await _openAccount();
       notifyListeners();
     }
+    if (_history?.unlocked ?? false) {
+      try {
+        await _history!.rewrap(password);
+      } catch (_) {
+        backupStatus =
+            'Password login berubah. Backup masih memakai password sebelumnya; buka Pengaturan untuk menyamakannya.';
+      }
+    } else if (_history != null) {
+      try {
+        await unlockHistory(password, authenticatedPassword: true);
+      } catch (_) {}
+    }
   }
 
   Future<void> logout() async {
@@ -1313,6 +1556,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     await PushService.stop(controller: this);
     if (!preview) {
       await persist();
+      try {
+        await backupNow();
+      } catch (_) {}
       await client?.auth.signOut(scope: SignOutScope.local);
     }
     _clear();
@@ -1323,6 +1569,14 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _clear() {
+    if (vault is DeviceVault && !background) {
+      DeviceRuntime.configureCallPush(null).catchError((Object _) {});
+    }
+    _backupTimer?.cancel();
+    _history = null;
+    backupBusy = false;
+    backupStatus =
+        'Masuk kembali untuk mengaktifkan backup dengan password login.';
     _timer?.cancel();
     _draftTimer?.cancel();
     if (_channel != null) {
@@ -1421,6 +1675,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _disposed = true;
+    _backupTimer?.cancel();
     _uploader.cancel();
     if (_observing) WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
