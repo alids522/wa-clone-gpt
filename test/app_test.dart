@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:adoetz_chat/app/app.dart';
@@ -7,6 +8,47 @@ import 'package:adoetz_chat/core/models.dart';
 import 'package:adoetz_chat/core/vault.dart';
 
 void main() {
+  testWidgets(
+    'app lock hides routes and rejects canceled device authentication',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      var accepted = false;
+      const channel = MethodChannel('adoetz/device_runtime');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        if (call.method == 'authenticate') return accepted;
+        throw StateError('Unexpected platform call ${call.method}');
+      });
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      final c = ChatController(vault: MemoryVault())..openPreview();
+      c.appLock = true;
+      c.locked = true;
+      await tester.pumpWidget(AdoetzApp(controller: c));
+      await tester.pumpAndSettle();
+      expect(find.text('Maya Putri'), findsNothing);
+      await tester.tap(find.text('Buka aplikasi'));
+      await tester.pumpAndSettle();
+      expect(c.locked, isTrue);
+      accepted = true;
+      await tester.tap(find.text('Buka aplikasi'));
+      await tester.pumpAndSettle();
+      expect(c.locked, isFalse);
+      expect(find.text('Maya Putri'), findsOneWidget);
+      c.activeChat = c.chats.first.id;
+      c.didChangeAppLifecycleState(AppLifecycleState.paused);
+      c.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(c.readingChat, isNull);
+      expect(find.text('Maya Putri'), findsNothing);
+      c.dispose();
+    },
+  );
   test('username and passphrase validation enforces product rules', () {
     expect(validateUsername('maya_123'), isNull);
     for (final name in ['admin', 'system', 'ab', 'Maya', 'user name']) {

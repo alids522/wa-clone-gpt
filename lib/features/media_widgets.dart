@@ -26,6 +26,14 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   bool loading = false;
   AudioPlayer? player;
   File? file;
+  bool audioReady = false;
+  double speed = 1;
+  @override
+  void initState() {
+    super.initState();
+    if (widget.message.kind == 'voice') player = AudioPlayer();
+  }
+
   Future<void> open() async {
     if (loading) return;
     setState(() => loading = true);
@@ -33,11 +41,16 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
       file ??= await MediaService.download(widget.controller, widget.message);
       if (!mounted) return;
       if (widget.message.kind == 'voice') {
-        player ??= AudioPlayer();
         if (player!.playing) {
           await player!.pause();
         } else {
-          await player!.setFilePath(file!.path);
+          if (!audioReady) {
+            await player!.setFilePath(file!.path);
+            audioReady = true;
+          }
+          if (player!.processingState == ProcessingState.completed) {
+            await player!.seek(Duration.zero);
+          }
           unawaited(player!.play());
         }
       } else if ((widget.message.data['mime'] as String? ?? '').startsWith(
@@ -82,47 +95,105 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   }
 
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: open,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (loading)
-            const SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            Icon(
-              widget.message.kind == 'voice'
-                  ? Icons.play_circle_outline
-                  : Icons.download_outlined,
-            ),
-          const SizedBox(width: 10),
-          Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.message.kind == 'voice'
-                      ? 'Pesan suara'
-                      : widget.message.data['name'] ?? 'Lampiran',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      InkWell(
+        onTap: open,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (loading)
+                const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                player == null
+                    ? const Icon(Icons.download_outlined)
+                    : StreamBuilder<PlayerState>(
+                        stream: player!.playerStateStream,
+                        builder: (context, snapshot) => Icon(
+                          snapshot.data?.playing == true &&
+                                  snapshot.data?.processingState !=
+                                      ProcessingState.completed
+                              ? Icons.pause_circle_outline
+                              : Icons.play_circle_outline,
+                        ),
+                      ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.message.kind == 'voice'
+                          ? 'Pesan suara'
+                          : widget.message.data['name'] ?? 'Lampiran',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      '${((widget.message.data['size'] as num? ?? 0) / 1024).round()} KB${widget.message.data['duration'] != null ? ' · ${((widget.message.data['duration'] as num) / 1000).round()} dtk' : ''}',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
                 ),
-                Text(
-                  '${((widget.message.data['size'] as num? ?? 0) / 1024).round()} KB${widget.message.data['duration'] != null ? ' · ${((widget.message.data['duration'] as num) / 1000).round()} dtk' : ''}',
-                  style: const TextStyle(fontSize: 11),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
-    ),
+      if (audioReady)
+        SizedBox(
+          width: 230,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              StreamBuilder<Duration>(
+                stream: player!.positionStream,
+                builder: (context, snapshot) {
+                  final duration = player!.duration ?? Duration.zero;
+                  final position = snapshot.data ?? Duration.zero;
+                  return Slider(
+                    semanticFormatterCallback: (value) =>
+                        '${value.round()} detik dari ${duration.inSeconds} detik',
+                    max: duration.inMilliseconds.toDouble().clamp(
+                      1,
+                      double.infinity,
+                    ),
+                    value: position.inMilliseconds.toDouble().clamp(
+                      0,
+                      duration.inMilliseconds.toDouble().clamp(
+                        1,
+                        double.infinity,
+                      ),
+                    ),
+                    onChanged: (value) =>
+                        player!.seek(Duration(milliseconds: value.round())),
+                  );
+                },
+              ),
+              TextButton(
+                onPressed: () async {
+                  final next = speed == 1
+                      ? 1.5
+                      : speed == 1.5
+                      ? 2.0
+                      : 1.0;
+                  await player!.setSpeed(next);
+                  if (mounted) setState(() => speed = next);
+                },
+                child: Text('Kecepatan ${speed}x'),
+              ),
+            ],
+          ),
+        ),
+    ],
   );
 }
 

@@ -2,6 +2,9 @@ package com.adoetzchat.device_runtime;
 
 import androidx.annotation.NonNull;
 import android.app.Activity;
+import android.hardware.biometrics.BiometricPrompt;
+import android.os.CancellationSignal;
+import java.util.concurrent.atomic.AtomicBoolean;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,6 +32,7 @@ public final class DeviceRuntimePlugin implements FlutterPlugin, MethodChannel.M
     private static boolean faulted;
     private MethodChannel channel;
     private Activity activity;
+    private CancellationSignal authentication;
     private static boolean protectScreen;
     private Context context;
     private static final ExecutorService disk = Executors.newSingleThreadExecutor();
@@ -39,9 +43,13 @@ public final class DeviceRuntimePlugin implements FlutterPlugin, MethodChannel.M
         else activity.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
     }
     @Override public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) { activity=binding.getActivity(); applyProtection(); }
-    @Override public void onDetachedFromActivityForConfigChanges() { activity=null; }
+    @Override public void onDetachedFromActivityForConfigChanges() { detachActivity(); }
     @Override public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) { onAttachedToActivity(binding); }
-    @Override public void onDetachedFromActivity() { activity=null; }
+    @Override public void onDetachedFromActivity() { detachActivity(); }
+    private void detachActivity() {
+        if (authentication != null) authentication.cancel();
+        activity=null;
+    }
     private static final class Waiter {
         final DeviceRuntimePlugin plugin;
         final MethodChannel.Result result;
@@ -62,6 +70,25 @@ public final class DeviceRuntimePlugin implements FlutterPlugin, MethodChannel.M
     @Override public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
         synchronized (DeviceRuntimePlugin.class) {
             if (call.method.equals("protect")) { protectScreen=Boolean.TRUE.equals(call.arguments); applyProtection(); result.success(null); }
+            else if (call.method.equals("authenticate")) {
+                if (activity == null || authentication != null) { result.success(false); return; }
+                final AtomicBoolean completed = new AtomicBoolean();
+                authentication = new CancellationSignal();
+                try {
+                    new BiometricPrompt.Builder(activity)
+                        .setTitle("Buka Adoetz Chat")
+                        .setSubtitle("Gunakan biometrik atau kunci layar perangkat")
+                        .setDeviceCredentialAllowed(true).build()
+                        .authenticate(authentication, activity.getMainExecutor(), new BiometricPrompt.AuthenticationCallback() {
+                            private void finish(boolean accepted) {
+                                if (!completed.compareAndSet(false,true)) return;
+                                authentication=null; result.success(accepted);
+                            }
+                            @Override public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult value) { finish(true); }
+                            @Override public void onAuthenticationError(int code, CharSequence message) { finish(false); }
+                        });
+                } catch (Exception e) { authentication=null; if(completed.compareAndSet(false,true)) result.success(false); }
+            }
             else if (call.method.equals("flush")) {
                 // The pinned storage provider uses apply(). Android commit() on
                 // the same preferences waits for outstanding asynchronous writes.

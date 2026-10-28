@@ -9,7 +9,8 @@ Deno.serve(async request => {
     await rateLimit(service, `turn:${user.id}`);
     const call = await auth.rpc('call_action', { call_id: input.call_id, device: input.device, operation: 'get' });
     if (call.error || !['ringing', 'connecting', 'connected'].includes(call.data?.status)) return json({ error: 'Call unavailable' }, 403);
-    const config = JSON.parse(await Deno.readTextFile('/home/deno/functions/_secrets/turn.json'));
+    const encoded = Deno.env.get('ADOETZ_TURN_CONFIG_B64');
+    const config = JSON.parse(encoded ? atob(encoded) : await Deno.readTextFile('/home/deno/functions/_secrets/turn.json'));
     const username = `${Math.floor(Date.now() / 1000) + 600}:${user.id}`;
     const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(config.secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
     // Coturn's documented REST credential format uses HMAC-SHA1, not a media cipher.

@@ -1,31 +1,35 @@
 # Security boundaries and open gates
 
-## Transport and local state
+## Message and file state
 
-Only public identity/prekey material leaves the Signal store. Message and receipt content is serialized inside Signal ciphertext. Account profile fields and transport metadata remain visible to the backend. Private identity keys, sessions, drafts and local presentation text are serialized into an Android encrypted secure-storage value. Auth tokens use the same secure-storage provider, not the default plain preferences store.
+Signal private identities and sessions stay in the encrypted Android vault. The backend receives public prekeys, ciphertext, profiles and transport metadata. Ratchet state and the exact outgoing ciphertext are committed together before a send; retries retain the same UUID/envelope. The native vault barrier waits for the pinned storage provider's preferences writes before transport or delivered receipts. A shared native transaction queue serializes foreground and background Flutter engines and reloads newer snapshots. Concurrent sync callers join the active operation.
 
-Client operations serialize ratchet access. The durable vault snapshot includes both updated cryptographic state and the exact outgoing envelope before network transmission. Retries use the same client UUID and envelope. Database sends serialize per conversation before assigning the ordered cursor; uniqueness on sender/client UUID prevents duplication after a lost acknowledgement. A malformed or unauthentic message stops that chat's catch-up instead of silently skipping it.
+Attachments use AES-256-GCM with authenticated bounded chunks, fresh keys/nonces and a ciphertext digest. File names, original MIME and content keys travel inside Signal messages. Upload streams outside the crypto transaction; only its durable completion releases the encrypted send. Private Storage policies restrict access by owner/conversation membership, status and session. Profile pictures are visible to authorized active app users and are not E2EE messages. Exporting an attachment to another application intentionally creates a plaintext copy outside the vault's control.
 
-The vault is a bounded-alpha implementation, not a scalable encrypted history database. It rewrites account state; process-kill behavior, storage capacity, Android Keystore recovery and native provider atomicity must be exercised on hardware. Do not claim the PRD chaos gates have passed.
+This remains a snapshot vault rather than a scalable encrypted history database. Hardware crash injection, Keystore recovery, filesystem capacity and temporary-file/cache retention need acceptance testing. An OS biometric/PIN prompt provides an optional UI access gate and hides routes on backgrounding; it does not make a rooted device trustworthy or bind every Signal key use to biometric hardware. Android screenshot protection is an optional OS control.
 
-## Identity
+## Device identity
 
-The third-party Dart Signal implementation is not an endorsement or audit by Signal. It implements an established protocol rather than a custom key agreement. Trust-on-first-use pins peer identities; changes fail closed. Single-device registration rejects a conflicting identity. Device loss has no automatic recovery or silent identity replacement. The initial signed prekey is retained; rotation and proactive prekey replenishment are not release-ready. Initial protocol/library and license review remain blocking beta gates.
+Each installation has its own Signal identity. New messages fan out to all observed active peer devices and the sender's other devices. TOFU pins individual identities; a changed identity fails closed. Safety numbers cover both accounts' active device-key sets and change when devices change. Signed prekeys rotate and old keys are retained for delayed messages; one-time prekeys replenish monotonically without restoring consumed IDs. Original 0.1 device IDs and ratchet addresses remain valid on upgrade, including devices first registered by old binaries during rollout.
 
-## Backend
+A new device cannot recover old keys/history from a password or an administrator. No key backup or transfer is implemented. The Dart Signal library and its integration have not received independent review; compatibility, licensing and cryptographic review remain production gates.
 
-Raw user metadata never authorizes a role. The Auth transaction trigger consumes a hashed, unexpired, one-use invite and creates a default user account. Username uniqueness failures roll back the transaction. Private-schema helpers contain narrowly checked SECURITY DEFINER code; public wrappers use SECURITY INVOKER with explicit grants. Raw messages and conversations have membership/status RLS. Clients cannot directly insert transport messages, write roles or read invite hashes. Current status is checked on every protected RPC; suspended tokens cannot continue protected database access.
+## Backend authorization
 
-Admin Edge requests validate JWTs using getUser(), then query current role/status. Mutations require password reauthentication and a reason. The transaction refuses self-targeting and all actions against other admins in this alpha, preventing last-admin removal. No master key or admin message-decryption endpoint exists. A force-reset currently restricts the account to reset_required; it does not claim to deliver replacement credentials or recover keys. Tokens are not magically invalidated by suspension; live policies are the enforcement boundary. Full session revocation, retention and deletion workflows remain open.
+An Auth transaction trigger consumes a hashed, unexpired, one-use invitation and creates a default user. User-editable metadata never grants a role. Private-schema helpers enforce authorization with an empty search path and explicit grants; exposed wrappers use invoker privileges. RLS protects exposed tables and private Storage. Session bindings prevent another login from borrowing a device's key identity; revocation is checked against current server sessions/status, including otherwise unexpired JWTs.
 
-Username login mappings are service-only and never returned to a client. Public login uses bounded payloads and a server-side account-keyed rate limiter; enumeration timing, distributed IP limits, signup abuse and prefix-search throttling require additional staging hardening. Rate-limit rows need a cleanup job before sustained use.
+Admin requests validate bearer tokens and current role/status. Mutations require password reauthentication and a reason. SQL guards prevent self/last-admin removal. Reset revokes sessions, sets a temporary password and requires replacement; it never recovers encryption keys. Passwords and chat content do not enter audit entries. Deletion is a restricted soft deletion, not a claim of complete legal retention/erasure handling.
 
-## Push and distribution
+Username mappings and Firebase/service-role credentials are server-only. Login has an account-keyed rate limiter; distributed IP abuse, enumeration timing and large-scale quota/capacity tests still need hardening. Realtime typing channels authorize membership and have TTL; message synchronization remains authoritative.
 
-Only token registration exists in this alpha; there is no complete delivery worker. Future FCM payloads must contain opaque event/chat IDs, never content or keys. Notifications are delivery hints; server catch-up is authoritative.
+## Push and calls
 
-Debug artifacts are clearly internal prototypes and do not provide stable update signing. Production candidates require an owner's protected keystore and environment configuration. No backend secrets, Firebase service-account keys or signing material belong in source or an APK.
+FCM data contains only opaque event IDs and event kinds, without message/file content or keys. The private worker authenticates to Firebase HTTP v1, retries durable jobs and removes unregistered tokens. Local notifications use generic copy. A push is a wake hint; delivered requires successful device decryption and durable storage. No permission or network means no guaranteed immediate notification; force-stop behavior must be tested on the actual OS/OEM.
 
-## Required release evidence
+Call signaling travels through authenticated encrypted device messages. Server call state binds caller/callee devices and enforces first acceptance, timeout and busy status. TURN credentials require an active authorized call and expire after ten minutes. TURN relays media encrypted by WebRTC; it is not an admin media-decryption endpoint. Provider firewall ports and real microphone/camera/network-switching behavior are separate acceptance requirements.
 
-Run the PRD AC-01 through AC-12 against live staging and two physical devices. Include direct REST/RLS abuse, process death at each ratchet/outbox write boundary, duplicate delivery and ACK loss, session revocation, stale notifications, changed identity handling, Android 10+ / OEM background restrictions and a signed N-to-N+1 upgrade. Obtain an external cryptographic review before claiming secure production messaging.
+## Distribution and acceptance
+
+Signed candidate builds use the protected stable keystore and increasing workflow build numbers. Debug alpha APKs have a different signing channel and should not replace persistent signed installations. No backend secret, Firebase service account or signing key belongs in source or an APK.
+
+Local crypto, transactional outbox, streaming upload, multi-device receipts and widget tests plus PostgreSQL authorization/upgrade regressions provide development evidence. Live disposable-account tests exercised Auth/admin, encrypted messages/files, avatar access, call authorization and storage/RPC denial. Complete PRD AC-01–AC-12, native fault injection, two-phone/OEM tests and independent review before claiming production readiness.

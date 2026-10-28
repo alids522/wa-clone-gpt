@@ -37,6 +37,80 @@ void main() {
   const self = Person(id: 'alice', username: 'alice', name: 'Alice');
   const peer = Person(id: 'bob', username: 'bob', name: 'Bob');
   test(
+    'upgrade retries a committed legacy envelope without advancing keys',
+    () async {
+      final vault = MemoryVault();
+      final store = await PersistentSignalStore.create();
+      final original = jsonEncode(store.data);
+      final envelope = <String, dynamic>{
+        'protocol': 'signal-v1',
+        'body': 'YWJj',
+      };
+      var sends = 0;
+      final client = SupabaseClient(
+        'https://staging.example.test',
+        'public-test-key',
+        accessToken: () async => 'test-token',
+        authOptions: const AuthClientOptions(autoRefreshToken: false),
+        httpClient: MockClient((request) async {
+          final name = request.url.pathSegments.last;
+          Object data;
+          if (name == 'my_account') {
+            data = {'role': 'user', 'status': 'active'};
+          } else if (name == 'list_chats' || name == 'sync_device_messages') {
+            data = [];
+          } else if (name == 'send_message') {
+            final args = jsonDecode(request.body);
+            expect(args['client_id'], 'old-message');
+            expect(args['envelope'], envelope);
+            sends++;
+            data = {
+              'id': 'server-id',
+              'sequence': 1,
+              'created_at': DateTime.now().toUtc().toIso8601String(),
+            };
+          } else {
+            throw StateError('Upgrade must not encrypt again: $name');
+          }
+          return http.Response(
+            jsonEncode(data),
+            200,
+            headers: {'content-type': 'application/json'},
+            request: request,
+          );
+        }),
+      );
+      final failures = <String>[];
+      final c =
+          ChatController(
+              vault: vault,
+              client: client,
+              onSyncError: (e, s) => failures.add('$e\n$s'),
+            )
+            ..me = self
+            ..signalStore = store
+            ..deviceId = 'alice';
+      c.chats.add(Conversation(id: 'chat', peer: peer));
+      c.messages.add(
+        ChatMessage(
+          id: 'old-message',
+          chatId: 'chat',
+          senderId: 'alice',
+          text: 'Old queue',
+          at: DateTime.now(),
+          envelope: envelope,
+        ),
+      );
+      await c.persist();
+      await c.sync();
+      expect(sends, 1, reason: failures.join('\n'));
+      expect(c.messages.single.delivery, Delivery.sent);
+      expect(jsonEncode(c.signalStore!.data), original);
+      c.dispose();
+      await client.dispose();
+    },
+  );
+  test(
     'a concurrent preference write cannot commit a ratchet without its ciphertext',
     () async {
       final vault = MemoryVault();
@@ -93,14 +167,22 @@ void main() {
             'Expected paused encryption; endpoints=$endpoints writes=${alice.sessionWrites} error=${c.error} offline=${c.offline}',
       );
       final savingPreference = c.persist();
+      var joined = false;
+      final joiningSync = c.sync().then((_) => joined = true);
       // Allow the competing write to attempt execution while encrypt() is paused.
       await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(
+        joined,
+        isFalse,
+        reason: 'Concurrent sync must wait for the active transaction',
+      );
       final intermediate = await readJson(vault, 'account_alice');
       expect(intermediate['messages'][0]['envelope'], isNull);
       expect(intermediate['crypto']['sessions'] ?? {}, isEmpty);
       alice.release.complete();
       await sending;
       await savingPreference;
+      await joiningSync;
       final committed = await readJson(vault, 'account_alice');
       final envelope = Map<String, dynamic>.from(
         committed['messages'][0]['envelope'],

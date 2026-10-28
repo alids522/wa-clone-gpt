@@ -1,5 +1,8 @@
 \set ON_ERROR_STOP on
 begin;
+set local role service_role;
+do $$ begin if public.adoetz_claim_push_jobs()<>'[]'::jsonb then raise exception 'Nonempty initial queue'; end if; end $$;
+reset role;
 insert into private.invitations(token_hash,expires_at) values
  (encode(extensions.digest('device-a','sha256'),'hex'),now()+interval '1 day'),
  (encode(extensions.digest('device-b','sha256'),'hex'),now()+interval '1 day'),
@@ -32,6 +35,7 @@ end $$;
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000002',true);
 select set_config('request.jwt.claims','{"session_id":"90000000-0000-4000-8000-000000000003"}',true);
 select public.register_device_v2('10000000-0000-4000-8000-000000000003',current_setting('test.bundle')::jsonb,'Peer');
+select public.device_settings('10000000-0000-4000-8000-000000000003','push','test-push-token-peer');
 select public.device_prekey_bundle(:'chat','10000000-0000-4000-8000-000000000001',true);
 select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000001',true);
 select set_config('request.jwt.claims','{"session_id":"90000000-0000-4000-8000-000000000001"}',true);
@@ -74,6 +78,9 @@ select set_config('request.jwt.claims','{"session_id":"90000000-0000-4000-8000-0
 do $$ begin
  if public.my_account()->>'status'<>'session_revoked' then raise exception 'Revoked access JWT remained active'; end if;
 end $$;
+reset role;
+set local role service_role;
+do $$ begin if jsonb_array_length(public.adoetz_claim_push_jobs())<>2 then raise exception 'Durable push queue did not claim eligible device jobs'; end if; end $$;
 reset role;
 do $$ begin
  if exists(select 1 from private.device_prekeys where device_id='10000000-0000-4000-8000-000000000001' and key_id=1) then raise exception 'Login resurrected consumed prekey'; end if;

@@ -30,6 +30,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   Person? me;
   bool passwordResetRequired = false;
   bool protectScreen = false;
+  bool appLock = false, locked = false, _authenticating = false;
   bool preview = false, busy = false, offline = false, readReceipts = true;
   String? error;
   final List<Conversation> chats = [];
@@ -51,20 +52,26 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _writes = Future.value();
   DateTime _nextRetry = DateTime(2000);
   int _attempt = 0;
-  bool _syncing = false, _disposed = false, _observing = false;
+  bool _disposed = false, _observing = false;
+  Future<void>? _currentSync;
   bool _syncOnOpen = true;
   bool _syncAgain = false, _uploading = false;
   DateTime _uploadRetry = DateTime(2000);
   final _uploader = StreamingStorage();
   String? activeChat;
   bool foreground = true;
-  String? get readingChat => foreground && !background ? activeChat : null;
+  String? get readingChat =>
+      foreground && !background && !locked ? activeChat : null;
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     foreground = state == AppLifecycleState.resumed;
+    if (state == AppLifecycleState.paused && appLock && me != null) {
+      locked = true;
+      notifyListeners();
+    }
     if (foreground) {
       final chat = chats.where((c) => c.id == activeChat).firstOrNull;
-      if (chat != null) {
+      if (chat != null && !locked) {
         markRead(chat);
       } else {
         sync();
@@ -310,6 +317,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       ..addAll(List<String>.from(state['blocked'] ?? []));
     readReceipts = state['read_receipts'] ?? true;
     protectScreen = state['protect_screen'] ?? false;
+    appLock = state['app_lock'] ?? false;
+    locked = appLock && !background;
     signalStore = state['crypto'] == null
         ? await PersistentSignalStore.create()
         : PersistentSignalStore(Map<String, dynamic>.from(state['crypto']));
@@ -338,7 +347,9 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       if (_syncOnOpen) await sync();
       return;
     }
-    if (vault is DeviceVault) await DeviceRuntime.protectScreen(protectScreen);
+    if (vault is DeviceVault) {
+      await DeviceRuntime.protectScreen(protectScreen || appLock);
+    }
     _channel = client!
         .channel('inbox-$uid')
         .onPostgresChanges(
@@ -378,6 +389,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       'blocked': blocked.toList(),
       'read_receipts': readReceipts,
       'protect_screen': protectScreen,
+      'app_lock': appLock,
       'crypto': signalStore?.data,
     });
     final write = _writes.then((_) => vault.write(key, snapshot));
@@ -449,14 +461,36 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       ..addAll(List<String>.from(state['hidden'] ?? []));
     readReceipts = state['read_receipts'] ?? true;
     protectScreen = state['protect_screen'] ?? false;
+    appLock = state['app_lock'] ?? false;
   }
 
-  Future<void> sync() async {
-    if (preview || me == null || _disposed) return;
-    if (_syncing) {
+  Future<void> sync() {
+    if (preview || me == null || _disposed) return Future.value();
+    if (_currentSync != null) {
       _syncAgain = true;
-      return;
+      return _currentSync!;
     }
+    final completed = Completer<void>();
+    _currentSync = completed.future;
+    unawaited(_runSyncLoop(completed));
+    return completed.future;
+  }
+
+  Future<void> _runSyncLoop(Completer<void> completed) async {
+    try {
+      do {
+        _syncAgain = false;
+        await _syncOnce();
+      } while (_syncAgain && !_disposed && me != null && !preview);
+    } catch (e, s) {
+      completed.completeError(e, s);
+    } finally {
+      _currentSync = null;
+      if (!completed.isCompleted) completed.complete();
+    }
+  }
+
+  Future<void> _syncOnce() async {
     if (!background && !_uploading && DateTime.now().isAfter(_uploadRetry)) {
       _uploading = true;
       _uploadPending()
@@ -466,7 +500,6 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
           })
           .whenComplete(() => _uploading = false);
     }
-    _syncing = true;
     try {
       await _exclusive(() async {
         final current = await client!
@@ -662,12 +695,7 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
         Duration(seconds: min(120, 1 << _attempt) + Random.secure().nextInt(4)),
       );
     } finally {
-      _syncing = false;
       if (!_disposed) notifyListeners();
-      if (_syncAgain && !_disposed && me != null) {
-        _syncAgain = false;
-        unawaited(sync());
-      }
     }
   }
 
@@ -843,6 +871,26 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _sendToDevices(Conversation chat, ChatMessage m) async {
+    // Preserve an already committed 0.1.0 envelope and its advanced ratchet.
+    // Re-encrypting or changing its idempotency payload could lose the old queue.
+    if (m.envelope?['protocol'] == 'signal-v1') {
+      final result = await client!
+          .rpc(
+            'send_message',
+            params: {
+              'chat': chat.id,
+              'client_id': m.id,
+              'envelope': m.envelope,
+            },
+          )
+          .timeout(const Duration(seconds: 20));
+      m.serverId = result['id'];
+      m.sequence = result['sequence'];
+      m.at = DateTime.parse(result['created_at']);
+      m.delivery = Delivery.sent;
+      await _commit();
+      return;
+    }
     if (m.envelope == null) {
       final devices =
           await client!.rpc('chat_devices', params: {'chat': chat.id}) as List;
@@ -1125,9 +1173,40 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
       await _commit();
     });
     if (vault is DeviceVault && !background) {
-      await DeviceRuntime.protectScreen(enabled);
+      await DeviceRuntime.protectScreen(enabled || appLock);
     }
     notifyListeners();
+  }
+
+  Future<bool> unlock() async {
+    if (_authenticating || background) return false;
+    final owner = me?.id;
+    _authenticating = true;
+    try {
+      final accepted = await DeviceRuntime.authenticate();
+      if (!accepted || me?.id != owner || _disposed) return false;
+      locked = false;
+      notifyListeners();
+      final chat = chats.where((c) => c.id == activeChat).firstOrNull;
+      if (chat != null && foreground) await markRead(chat);
+      return true;
+    } finally {
+      _authenticating = false;
+    }
+  }
+
+  Future<bool> setAppLock(bool enabled) async {
+    final owner = me?.id;
+    if (!await unlock() || me?.id != owner) return false;
+    await _exclusive(() async {
+      appLock = enabled;
+      await _commit();
+    });
+    if (vault is DeviceVault) {
+      await DeviceRuntime.protectScreen(protectScreen || appLock);
+    }
+    notifyListeners();
+    return true;
   }
 
   Future<void> toggleChatPreference(
@@ -1189,6 +1268,8 @@ class ChatController extends ChangeNotifier with WidgetsBindingObserver {
     me = null;
     passwordResetRequired = false;
     protectScreen = false;
+    appLock = false;
+    locked = false;
     preview = false;
     chats.clear();
     messages.clear();

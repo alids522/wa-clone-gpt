@@ -36,3 +36,5 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/authorization.sql
       - name: Check devices, calls and Storage isolation
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/devices_calls_storage.sql
+      - name: Check upgrade compatibility with legacy identities and outboxes
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/legacy_upgrade.sql

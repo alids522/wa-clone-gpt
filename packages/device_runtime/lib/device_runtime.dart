@@ -11,4 +11,6 @@ class DeviceRuntime {
   static Future<void> openNotificationSettings() =>
       _channel.invokeMethod('notificationSettings');
   static Future<void> flushSecureStorage() => _channel.invokeMethod('flush');
+  static Future<bool> authenticate() async =>
+      await _channel.invokeMethod<bool>('authenticate') ?? false;
 }

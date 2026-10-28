@@ -123,6 +123,33 @@ class SettingsScreen extends StatelessWidget {
           },
         ),
         const SectionLabel('Privasi & keamanan'),
+        if (!c.preview)
+          SwitchListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+            secondary: const Icon(Icons.fingerprint),
+            title: const Text('Kunci aplikasi'),
+            subtitle: const Text(
+              'Biometrik atau PIN perangkat saat aplikasi dibuka kembali',
+            ),
+            value: c.appLock,
+            onChanged: (value) async {
+              try {
+                if (!await c.setAppLock(value) && context.mounted) {
+                  showNotice(
+                    context,
+                    'Verifikasi belum berhasil. Atur kunci layar perangkat lalu coba lagi.',
+                  );
+                }
+              } catch (_) {
+                if (context.mounted) {
+                  showNotice(
+                    context,
+                    'Kunci aplikasi belum dapat diubah. Coba lagi.',
+                  );
+                }
+              }
+            },
+          ),
         SwitchListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 24),
           secondary: const Icon(Icons.screenshot_monitor),

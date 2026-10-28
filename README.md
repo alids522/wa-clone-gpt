@@ -5,7 +5,7 @@ Application ID: `com.adoetzchat.messenger`. Android 10+. Flutter 3.44.1 / Dart 3
 
 **0.2.0 is an internal technical prototype. Independent security review and physical-device acceptance remain release gates.**
 
-## What works in this alpha
+## Implemented features
 
 - Midnight Blue, Ice Blue and persistent system theme; Indonesian interface.
 - Clearly labeled local preview that works without backend credentials. Preview sends remain queued and never claim remote delivery.
@@ -15,10 +15,10 @@ Application ID: `com.adoetzchat.messenger`. Android 10+. Flutter 3.44.1 / Dart 3
 - Android encrypted vault for sessions, drafts, message cache, ratchet state and durable outbox; ciphertext and ratchet are committed together before transport.
 - Idempotent server sends, paginated cursor catch-up, Realtime hints, encrypted delivery/read receipt events, read receipt preference, retry backoff and blocking.
 - Current server-side role/status checks. Admin account lists, suspend/unsuspend, restricted reset-pending state, one-time invites, step-up password verification and audit logs.
-- Optional Firebase client initialization, contextual notification permission and protected token registration.
+- Firebase client initialization, contextual notification permission and protected per-device token registration.
 - Multi-device login with independent Signal identities, encrypted fanout to peers and your other devices, per-device push tokens and session revocation. Existing keys and history are retained during upgrade.
 - Encrypted photo/video/document attachments, durable upload queues, voice recording/playback, replies, edits, reactions, forwarding and deletion events.
-- Profile pictures, unblock/report actions, safety numbers and optional Android screenshot protection.
+- Profile pictures, unblock/report actions, safety numbers and optional Android screenshot protection and biometric/device-PIN app lock.
 - FCM HTTP v1 dispatch queue, background decryption and delivered receipts, private local notifications and notification navigation.
 - Voice/video WebRTC calls with encrypted signaling, short-lived TURN credentials, Android incoming-call integration, call history, mute/speaker/camera controls and ICE restart.
 - Administrator invite revocation, role changes, session revocation, temporary-password resets and mandatory user password replacement.
@@ -43,9 +43,9 @@ Never include Supabase secret/service-role keys in client configuration.
 
 The configured backend is the owner's self-hosted server, `https://supabase.adoetz52.my.id`. See `docs/self-hosted-setup.md` and `docs/implementation-status.md`. The unrelated Supabase Cloud project is untouched. Test all migrations in an isolated database before applying upgrades; back up live Auth and app data first.
 
-1. Review `supabase/migrations/20261028011508_adoetz_foundation.sql` and apply it using the SQL editor or the Supabase CLI migration workflow. The `private` schema must not be exposed by the Data API.
+1. On a new installation, apply all `supabase/migrations/*.sql` in filename order using the SQL editor or migration workflow. On this existing server, apply only pending migrations. The `private` schema must not be exposed by the Data API.
 2. Enable email/password signup, disable email confirmation as specified in the PRD, and set the password minimum to 12. The Auth insert trigger validates and consumes invites atomically, including direct public signup calls. Keep provider rate limits enabled.
-3. Deploy the `login-identifier` and `admin` Edge Functions and the shared module. `supabase/config.toml` contains their JWT-gateway settings; each protected request explicitly validates its bearer JWT. The built-in server environment provides service credentials; do not add them to Flutter.
+3. Deploy `login-identifier`, `admin`, `account-password`, `push-dispatch`, `turn-credentials` and the shared module. `supabase/config.toml` contains their JWT-gateway settings; each protected request explicitly validates its bearer JWT. The built-in server environment provides service credentials; do not add them to Flutter.
 4. Bootstrap an invitation from the SQL editor with a cryptographically random code. Store its SHA-256 hash, never the code, in `private.invitations`. Example shape (replace the placeholder with a locally generated random value):
 
 ```sql
@@ -98,7 +98,7 @@ flutter analyze --no-pub
 flutter test --no-pub
 ```
 
-Backend CI creates an isolated PostgreSQL 17 database, applies the actual migration and checks invite enforcement, role escalation denial, member isolation, idempotent sends, blocks and suspended-token restrictions. These tests use a minimal Auth contract fixture and do not replace a real Supabase staging acceptance test.
+Backend CI creates an isolated PostgreSQL 17 database, applies the actual migrations and checks invite enforcement, role escalation denial, member isolation, idempotent sends, blocks and suspended-token restrictions. These tests use a minimal Auth contract fixture and do not replace a real Supabase staging acceptance test.
 
 ## Remaining PRD gates
 
