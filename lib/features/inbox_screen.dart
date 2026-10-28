@@ -1,4 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../core/call_service.dart';
+import '../core/push_service.dart';
+import 'package:device_runtime/device_runtime.dart';
+import 'call_screen.dart';
 import '../app/theme.dart';
 import '../app/widgets.dart';
 import '../core/controller.dart';
@@ -15,6 +20,51 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  CallService? calls;
+  StreamSubscription<String>? _navigation;
+  bool _callVisible = false;
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.controller.preview) {
+      calls = CallService(widget.controller)..onShow = _showCall;
+      _navigation = PushService.navigation.stream.listen(_openNotification);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (PushService.pendingChat != null) {
+          _openNotification(PushService.pendingChat!);
+        }
+      });
+    }
+  }
+
+  void _openNotification(String id) {
+    if (!mounted) return;
+    final chat = widget.controller.chats.where((c) => c.id == id).firstOrNull;
+    if (chat == null) return;
+    PushService.pendingChat = null;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatScreen(controller: widget.controller, chat: chat),
+      ),
+    );
+  }
+
+  Future<void> _showCall() async {
+    if (!mounted || _callVisible || calls == null) return;
+    _callVisible = true;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => CallScreen(service: calls!)),
+    );
+    _callVisible = false;
+  }
+
+  @override
+  void dispose() {
+    _navigation?.cancel();
+    calls?.dispose();
+    super.dispose();
+  }
+
   int tab = 0, filter = 0;
   String query = '';
   @override
@@ -69,6 +119,12 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          if (!c.preview)
+            IconButton(
+              tooltip: 'Riwayat panggilan',
+              onPressed: _callHistory,
+              icon: const Icon(Icons.call_outlined),
+            ),
           Padding(
             padding: const EdgeInsets.only(right: 18),
             child: IconButton(
@@ -81,6 +137,37 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Column(
         children: [
+          if (PushService.configured && !c.preview)
+            ValueListenableBuilder<bool>(
+              valueListenable: PushService.allowed,
+              builder: (context, allowed, _) => allowed
+                  ? const SizedBox.shrink()
+                  : MaterialBanner(
+                      content: const Text(
+                        'Izinkan notifikasi pesan dan panggilan.',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () async {
+                            try {
+                              final enabled = await PushService.enable(c);
+                              if (!enabled) {
+                                await DeviceRuntime.openNotificationSettings();
+                              }
+                            } catch (_) {
+                              if (context.mounted) {
+                                showNotice(
+                                  context,
+                                  'Notifikasi belum dapat diaktifkan. Periksa Google Play Services dan izin notifikasi.',
+                                );
+                              }
+                            }
+                          },
+                          child: const Text('Aktifkan'),
+                        ),
+                      ],
+                    ),
+            ),
           if (c.preview || c.offline)
             Container(
               width: double.infinity,
@@ -269,7 +356,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                               ),
                                             Expanded(
                                               child: Text(
-                                                last?.text ??
+                                                last?.displayText ??
                                                     'Kirim sapaan pertama',
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
@@ -371,6 +458,70 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _callHistory() async {
+    try {
+      final c = widget.controller;
+      final rows = await c.client!
+          .from('calls')
+          .select()
+          .order('created_at', ascending: false)
+          .limit(50);
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (context) => SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(context).height * .7,
+            child: rows.isEmpty
+                ? const EmptyState(
+                    icon: Icons.call_outlined,
+                    title: 'Belum ada panggilan',
+                    body: 'Riwayat panggilan akan tampil di sini.',
+                  )
+                : ListView(
+                    children: [
+                      const SectionLabel('Riwayat panggilan'),
+                      for (final row in rows)
+                        ListTile(
+                          leading: Icon(
+                            row['video'] == true
+                                ? Icons.videocam_outlined
+                                : Icons.call_outlined,
+                          ),
+                          title: Text(
+                            c.chats
+                                    .where(
+                                      (r) => r.id == row['conversation_id'],
+                                    )
+                                    .firstOrNull
+                                    ?.peer
+                                    .name ??
+                                'Kontak',
+                          ),
+                          subtitle: Text(
+                            '${row['status']} · ${DateTime.parse(row['created_at']).toLocal().toString().substring(0, 16)}',
+                          ),
+                          onTap: () {
+                            final room = c.chats
+                                .where((r) => r.id == row['conversation_id'])
+                                .firstOrNull;
+                            Navigator.pop(context);
+                            if (room != null) {
+                              calls?.start(room, withVideo: row['video']);
+                            }
+                          },
+                        ),
+                    ],
+                  ),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) showNotice(context, 'Riwayat panggilan belum dapat dimuat.');
+    }
+  }
+
   String _time(DateTime t) {
     final local = t.toLocal();
     return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
@@ -389,8 +540,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 chat.pinned ? 'Lepas sematan' : 'Sematkan percakapan',
               ),
               onTap: () {
-                setState(() => chat.pinned = !chat.pinned);
-                widget.controller.persist();
+                widget.controller.toggleChatPreference(chat, pin: true);
                 Navigator.pop(context);
               },
             ),
@@ -400,8 +550,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 chat.muted ? 'Aktifkan notifikasi' : 'Bisukan percakapan',
               ),
               onTap: () {
-                setState(() => chat.muted = !chat.muted);
-                widget.controller.persist();
+                widget.controller.toggleChatPreference(chat, pin: false);
                 Navigator.pop(context);
               },
             ),

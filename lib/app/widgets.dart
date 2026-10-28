@@ -1,4 +1,6 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/models.dart';
 import 'theme.dart';
 
@@ -21,16 +23,61 @@ class Avatar extends StatelessWidget {
     return CircleAvatar(
       radius: radius,
       backgroundColor: color.withValues(alpha: .2),
-      child: Text(
-        person.name.isEmpty ? '?' : person.name.characters.first.toUpperCase(),
-        style: TextStyle(
-          color: color.computeLuminance() < .15 ? ice : color,
-          fontSize: radius * .72,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
+      child: person.avatarPath != null
+          ? _AvatarPhoto(path: person.avatarPath!, radius: radius)
+          : Text(
+              person.name.isEmpty
+                  ? '?'
+                  : person.name.characters.first.toUpperCase(),
+              style: TextStyle(
+                color: color.computeLuminance() < .15 ? ice : color,
+                fontSize: radius * .72,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
     );
   }
+}
+
+class _AvatarPhoto extends StatefulWidget {
+  const _AvatarPhoto({required this.path, required this.radius});
+  final String path;
+  final double radius;
+  @override
+  State<_AvatarPhoto> createState() => _AvatarPhotoState();
+}
+
+class _AvatarPhotoState extends State<_AvatarPhoto> {
+  late Future<Uint8List> photo;
+  Future<Uint8List> load() async =>
+      Supabase.instance.client.storage.from('avatars').download(widget.path);
+  @override
+  void initState() {
+    super.initState();
+    photo = load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AvatarPhoto old) {
+    super.didUpdateWidget(old);
+    if (old.path != widget.path) photo = load();
+  }
+
+  @override
+  Widget build(BuildContext context) => ClipOval(
+    child: FutureBuilder<Uint8List>(
+      future: photo,
+      builder: (context, snapshot) => snapshot.hasData
+          ? Image.memory(
+              snapshot.data!,
+              width: widget.radius * 2,
+              height: widget.radius * 2,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const Icon(Icons.person),
+            )
+          : const Icon(Icons.person),
+    ),
+  );
 }
 
 class BrandMark extends StatelessWidget {

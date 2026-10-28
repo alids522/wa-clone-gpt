@@ -48,6 +48,7 @@ app.*.map.json
 config/*.json
 !config/*.example.json
 **/google-services.json
+**/*firebase-adminsdk*.json
 **/firebase_config.xml
 *.jks
 *.keystore

@@ -27,3 +27,13 @@ verify_jwt = false
 [functions.admin]
 verify_jwt = false
 # Admin explicitly validates the bearer JWT via auth.getUser().
+
+[functions.account-password]
+verify_jwt = false
+
+[functions.turn-credentials]
+verify_jwt = false
+
+[functions.push-dispatch]
+verify_jwt = false
+# Dispatcher accepts only the server's service-role bearer, never a client JWT.

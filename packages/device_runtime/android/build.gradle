@@ -1,0 +1,15 @@
+group 'com.adoetzchat.device_runtime'
+version '1.0.0'
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'com.adoetzchat.device_runtime'
+    compileSdk 36
+    defaultConfig { minSdk 29 }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies { implementation project(':flutter_secure_storage') }

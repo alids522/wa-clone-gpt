@@ -3,9 +3,17 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app/app.dart';
 import 'core/controller.dart';
 import 'core/vault.dart';
+import 'core/push_service.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (PushService.configured) {
+    FirebaseMessaging.onBackgroundMessage(backgroundPush);
+    try {
+      await PushService.initialize();
+    } catch (_) {}
+  }
   const vault = DeviceVault();
   const url = String.fromEnvironment('SUPABASE_URL');
   const key = String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');

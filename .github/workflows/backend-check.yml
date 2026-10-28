@@ -34,3 +34,5 @@ jobs:
         run: for migration in supabase/migrations/*.sql; do psql -v ON_ERROR_STOP=1 --single-transaction -f "$migration"; done
       - name: Check invitation and authorization contracts
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/authorization.sql
+      - name: Check devices, calls and Storage isolation
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/devices_calls_storage.sql

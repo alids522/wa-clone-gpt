@@ -4,6 +4,9 @@ import '../app/widgets.dart';
 import '../core/controller.dart';
 import '../core/push_service.dart';
 import 'admin_screen.dart';
+import 'devices_screen.dart';
+import 'password_screen.dart';
+import '../core/media_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key, required this.controller});
@@ -24,7 +27,30 @@ class SettingsScreen extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Avatar(me, radius: 30),
+              GestureDetector(
+                onTap: () async {
+                  try {
+                    await MediaService.avatar(c);
+                  } catch (_) {
+                    if (context.mounted) {
+                      showNotice(
+                        context,
+                        'Pilih foto JPG, PNG, atau WebP maksimal 5 MB.',
+                      );
+                    }
+                  }
+                },
+                child: Stack(
+                  children: [
+                    Avatar(me, radius: 30),
+                    const Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: Icon(Icons.add_a_photo, size: 18),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
@@ -99,37 +125,64 @@ class SettingsScreen extends StatelessWidget {
         const SectionLabel('Privasi & keamanan'),
         SwitchListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+          secondary: const Icon(Icons.screenshot_monitor),
+          title: const Text('Lindungi tangkapan layar'),
+          subtitle: const Text(
+            'Batasi tangkapan layar biasa pada perangkat ini',
+          ),
+          value: c.protectScreen,
+          onChanged: c.setScreenProtection,
+        ),
+        if (!c.preview)
+          ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+            leading: const Icon(Icons.password),
+            title: const Text('Ganti password'),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => PasswordScreen(controller: c),
+              ),
+            ),
+          ),
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 24),
           secondary: const Icon(Icons.done_all_rounded),
           title: const Text('Tanda dibaca'),
           subtitle: const Text('Bagikan saat pesan sudah dibuka'),
           value: c.readReceipts,
           onChanged: (value) {
-            c.readReceipts = value;
-            c.persist();
-            c.notifyPreferences();
+            c.setReadReceipts(value);
           },
         ),
         ListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 24),
           leading: const Icon(Icons.phonelink_lock_outlined),
           title: const Text('Perangkat & kunci'),
-          subtitle: const Text('Satu identitas perangkat aktif'),
+          subtitle: const Text('Kelola perangkat yang masuk ke akunmu'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => showDialog<void>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('Kunci tinggal di perangkatmu'),
-              content: const Text(
-                'Reset password tidak memulihkan pesan lama. Jangan hapus data aplikasi atau ganti perangkat bila kamu masih membutuhkan riwayat. Backup kunci dan perpindahan perangkat belum tersedia pada alpha ini.',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Mengerti'),
+          onTap: () => c.preview
+              ? showDialog<void>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Kunci tinggal di perangkatmu'),
+                    content: const Text(
+                      'Reset password tidak memulihkan pesan lama. Jangan hapus data aplikasi atau ganti perangkat bila kamu masih membutuhkan riwayat. Backup kunci dan perpindahan perangkat belum tersedia pada alpha ini.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Mengerti'),
+                      ),
+                    ],
+                  ),
+                )
+              : Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => DevicesScreen(controller: c),
+                  ),
                 ),
-              ],
-            ),
-          ),
         ),
         ListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 24),
@@ -155,6 +208,13 @@ class SettingsScreen extends StatelessWidget {
                             leading: Avatar(chat.peer),
                             title: Text(chat.peer.name),
                             subtitle: Text('@${chat.peer.username}'),
+                            trailing: TextButton(
+                              onPressed: () async {
+                                await c.unblock(chat.peer.id);
+                                if (context.mounted) Navigator.pop(context);
+                              },
+                              child: const Text('Buka blokir'),
+                            ),
                           ),
                       ],
                     ),
@@ -187,11 +247,11 @@ class SettingsScreen extends StatelessWidget {
           onTap: () => showAboutDialog(
             context: context,
             applicationName: 'Adoetz Chat',
-            applicationVersion: '0.1.0 alpha',
+            applicationVersion: '0.2.0 internal prototype',
             applicationIcon: const BrandMark(size: 48),
             children: const [
               Text(
-                'Pesan privat, tetap simpel.\n\nPrototipe ini belum lulus audit E2EE dan pengujian dua perangkat. Jangan gunakan untuk data sensitif.\n\nServer memproses profil publik dan metadata transport. Isi pesan dienkripsi di perangkat. Panggilan, media, dan pemulihan kunci belum tersedia.',
+                'Pesan, lampiran, dan voice note dienkripsi di perangkat. Panggilan memakai WebRTC dengan signaling terenkripsi.\n\nServer memproses profil dan metadata transport. Foto profil dan alasan laporan dapat dibaca server. Riwayat lama tetap memerlukan kunci perangkat lama.\n\nVersi internal ini masih memerlukan audit keamanan independen dan pengujian penerimaan pada perangkat nyata.',
               ),
             ],
           ),

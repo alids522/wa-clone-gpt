@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:uuid/uuid.dart';
 import '../app/widgets.dart';
 import '../core/controller.dart';
 
@@ -13,6 +14,7 @@ class AdminScreen extends StatefulWidget {
 class _AdminScreenState extends State<AdminScreen> {
   List<Map<String, dynamic>> rows = [];
   bool loading = true;
+  bool acting = false;
   String? error;
   int tab = 0;
   @override
@@ -29,7 +31,15 @@ class _AdminScreenState extends State<AdminScreen> {
     try {
       final result = await widget.controller.client!.functions.invoke(
         'admin',
-        body: {'action': tab == 0 ? 'list-users' : 'audit'},
+        body: {
+          'action': tab == 0
+              ? 'list-users'
+              : tab == 1
+              ? 'list-invites'
+              : tab == 3
+              ? 'list-reports'
+              : 'audit',
+        },
       );
       if (mounted) {
         setState(
@@ -48,7 +58,11 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Future<void> action(String action, String? target) async {
+    if (acting) return;
+    acting = true;
+    final requestId = const Uuid().v4();
     final reason = TextEditingController(), password = TextEditingController();
+    final temporary = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -73,6 +87,21 @@ class _AdminScreenState extends State<AdminScreen> {
                 decoration: const InputDecoration(labelText: 'Alasan tindakan'),
               ),
               const SizedBox(height: 12),
+              if (action == 'force-reset') ...[
+                TextField(
+                  controller: temporary,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Password sementara (minimal 12 karakter)',
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    'Sampaikan password sementara lewat kanal lain yang aman. Pengguna wajib menggantinya saat masuk.',
+                  ),
+                ),
+              ],
               TextField(
                 controller: password,
                 obscureText: true,
@@ -90,7 +119,9 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
           FilledButton(
             onPressed: () {
-              if (reason.text.trim().isNotEmpty && password.text.isNotEmpty) {
+              if (reason.text.trim().isNotEmpty &&
+                  password.text.isNotEmpty &&
+                  (action != 'force-reset' || temporary.text.length >= 12)) {
                 Navigator.pop(context, true);
               }
             },
@@ -102,6 +133,8 @@ class _AdminScreenState extends State<AdminScreen> {
     if (ok != true) {
       reason.dispose();
       password.dispose();
+      temporary.dispose();
+      acting = false;
       return;
     }
     try {
@@ -112,6 +145,8 @@ class _AdminScreenState extends State<AdminScreen> {
           'target': target,
           'reason': reason.text.trim(),
           'password': password.text,
+          'request_id': requestId,
+          if (action == 'force-reset') 'temporary_password': temporary.text,
         },
       );
       if (!mounted) return;
@@ -147,6 +182,8 @@ class _AdminScreenState extends State<AdminScreen> {
     } finally {
       reason.dispose();
       password.dispose();
+      temporary.dispose();
+      acting = false;
     }
   }
 
@@ -177,16 +214,21 @@ class _AdminScreenState extends State<AdminScreen> {
               children: [
                 Padding(
                   padding: const EdgeInsets.all(16),
-                  child: SegmentedButton<int>(
-                    segments: const [
-                      ButtonSegment(value: 0, label: Text('Pengguna')),
-                      ButtonSegment(value: 1, label: Text('Audit log')),
-                    ],
-                    selected: {tab},
-                    onSelectionChanged: (s) {
-                      tab = s.first;
-                      load();
-                    },
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SegmentedButton<int>(
+                      segments: const [
+                        ButtonSegment(value: 0, label: Text('Pengguna')),
+                        ButtonSegment(value: 1, label: Text('Undangan')),
+                        ButtonSegment(value: 2, label: Text('Audit log')),
+                        ButtonSegment(value: 3, label: Text('Laporan')),
+                      ],
+                      selected: {tab},
+                      onSelectionChanged: (s) {
+                        tab = s.first;
+                        load();
+                      },
+                    ),
                   ),
                 ),
                 if (loading) const LinearProgressIndicator(),
@@ -216,12 +258,22 @@ class _AdminScreenState extends State<AdminScreen> {
                                   title: Text(
                                     (tab == 0
                                             ? row['username']
+                                            : tab == 1
+                                            ? row['id']
+                                            : tab == 3
+                                            ? 'Laporan: ${row['target_id']}'
                                             : row['action']) ??
                                         '',
                                   ),
                                   subtitle: Text(
                                     tab == 0
                                         ? '${row['role']} · ${row['status']}'
+                                        : tab == 1
+                                        ? '${row['revoked'] == true
+                                              ? 'Dicabut'
+                                              : row['used_at'] != null
+                                              ? 'Terpakai'
+                                              : 'Belum dipakai'} · ${row['expires_at']}'
                                         : '${row['created_at']}\n${row['reason'] ?? ''}',
                                   ),
                                   trailing:
@@ -231,24 +283,60 @@ class _AdminScreenState extends State<AdminScreen> {
                                           onSelected: (s) =>
                                               action(s, row['id']),
                                           itemBuilder: (_) => [
-                                            PopupMenuItem(
-                                              value:
+                                            if (row['role'] == 'admin')
+                                              const PopupMenuItem(
+                                                value: 'demote',
+                                                child: Text(
+                                                  'Ubah menjadi user',
+                                                ),
+                                              ),
+                                            if (row['role'] != 'admin') ...[
+                                              PopupMenuItem(
+                                                value:
+                                                    row['status'] == 'suspended'
+                                                    ? 'unsuspend'
+                                                    : 'suspend',
+                                                child: Text(
                                                   row['status'] == 'suspended'
-                                                  ? 'unsuspend'
-                                                  : 'suspend',
-                                              child: Text(
-                                                row['status'] == 'suspended'
-                                                    ? 'Aktifkan akun'
-                                                    : 'Nonaktifkan akun',
+                                                      ? 'Aktifkan akun'
+                                                      : 'Nonaktifkan akun',
+                                                ),
                                               ),
-                                            ),
-                                            const PopupMenuItem(
-                                              value: 'force-reset',
-                                              child: Text(
-                                                'Paksa reset password',
+                                              const PopupMenuItem(
+                                                value: 'force-reset',
+                                                child: Text(
+                                                  'Paksa reset password',
+                                                ),
                                               ),
-                                            ),
+                                              const PopupMenuItem(
+                                                value: 'revoke-sessions',
+                                                child: Text('Cabut semua sesi'),
+                                              ),
+                                              const PopupMenuItem(
+                                                value: 'promote',
+                                                child: Text(
+                                                  'Jadikan administrator',
+                                                ),
+                                              ),
+                                              const PopupMenuItem(
+                                                value: 'soft-delete',
+                                                child: Text(
+                                                  'Nonaktifkan permanen',
+                                                ),
+                                              ),
+                                            ],
                                           ],
+                                        )
+                                      : tab == 1 &&
+                                            row['revoked'] != true &&
+                                            row['used_at'] == null
+                                      ? IconButton(
+                                          tooltip: 'Cabut undangan',
+                                          onPressed: () => action(
+                                            'revoke-invite',
+                                            row['id'],
+                                          ),
+                                          icon: const Icon(Icons.link_off),
                                         )
                                       : null,
                                 ),

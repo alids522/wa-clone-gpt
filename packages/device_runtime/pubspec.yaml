@@ -1,0 +1,15 @@
+name: device_runtime
+description: Process-wide transaction lock shared by foreground and FCM Flutter engines.
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: '>=3.12.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.adoetzchat.device_runtime
+        pluginClass: DeviceRuntimePlugin

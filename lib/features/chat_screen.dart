@@ -1,9 +1,17 @@
+import 'dart:io';
+import 'dart:async';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import '../app/theme.dart';
 import '../app/widgets.dart';
 import '../core/controller.dart';
 import '../core/models.dart';
+import '../core/call_service.dart';
+import '../core/media_service.dart';
+import 'media_widgets.dart';
+import 'devices_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.controller, required this.chat});
@@ -17,6 +25,11 @@ class _ChatScreenState extends State<ChatScreen> {
   late final TextEditingController composer;
   final scroll = ScrollController();
   bool sending = false;
+  ChatMessage? reply;
+  RealtimeChannel? presence;
+  Timer? typingExpiry;
+  DateTime lastTyping = DateTime(2000);
+  bool typing = false;
   @override
   void initState() {
     super.initState();
@@ -24,12 +37,39 @@ class _ChatScreenState extends State<ChatScreen> {
       text: widget.controller.drafts[widget.chat.id] ?? '',
     );
     widget.controller.activeChat = widget.chat.id;
-    widget.controller.markRead(widget.chat);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.markRead(widget.chat);
+    });
+    if (!widget.controller.preview) {
+      presence =
+          widget.controller.client!.channel(
+              'chat:${widget.chat.id}',
+              opts: const RealtimeChannelConfig(private: true),
+            )
+            ..onBroadcast(
+              event: 'typing',
+              callback: (payload) {
+                if (payload['user'] != widget.chat.peer.id ||
+                    widget.controller.blocked.contains(widget.chat.peer.id) ||
+                    !mounted) {
+                  return;
+                }
+                setState(() => typing = payload['typing'] == true);
+                typingExpiry?.cancel();
+                typingExpiry = Timer(const Duration(seconds: 5), () {
+                  if (mounted) setState(() => typing = false);
+                });
+              },
+            )
+            ..subscribe();
+    }
   }
 
   @override
   void dispose() {
     widget.controller.activeChat = null;
+    typingExpiry?.cancel();
+    if (presence != null) widget.controller.client!.removeChannel(presence!);
     composer.dispose();
     scroll.dispose();
     super.dispose();
@@ -43,7 +83,20 @@ class _ChatScreenState extends State<ChatScreen> {
       composer.clear();
     });
     try {
-      await widget.controller.send(widget.chat, text);
+      await widget.controller.send(
+        widget.chat,
+        text,
+        data: {
+          if (reply != null)
+            'reply': {
+              'id': reply!.id,
+              'text': reply!.displayText.length > 160
+                  ? reply!.displayText.substring(0, 160)
+                  : reply!.displayText,
+            },
+        },
+      );
+      if (mounted) setState(() => reply = null);
     } catch (_) {
       if (mounted) {
         composer.text = text;
@@ -89,7 +142,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       Text(
-                        '@${chat.peer.username}',
+                        typing ? 'Sedang mengetik…' : '@${chat.peer.username}',
                         style: TextStyle(
                           fontSize: 12,
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -102,6 +155,16 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           actions: [
+            IconButton(
+              tooltip: 'Panggilan suara',
+              onPressed: () => _call(false),
+              icon: const Icon(Icons.call_outlined),
+            ),
+            IconButton(
+              tooltip: 'Panggilan video',
+              onPressed: () => _call(true),
+              icon: const Icon(Icons.videocam_outlined),
+            ),
             PopupMenuButton<String>(
               tooltip: 'Opsi percakapan',
               onSelected: (s) {
@@ -146,7 +209,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: Text(
                       c.preview
                           ? 'Contoh percakapan · hanya di perangkat ini'
-                          : 'Signal Protocol · prototipe belum diaudit',
+                          : 'Pesan dan lampiran dienkripsi di perangkat',
                       style: TextStyle(
                         fontSize: 11,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -220,18 +283,53 @@ class _ChatScreenState extends State<ChatScreen> {
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.end,
                                     children: [
-                                      Text(
-                                        m.text,
-                                        style: TextStyle(
-                                          color: mine
-                                              ? Colors.white
-                                              : Theme.of(
-                                                  context,
-                                                ).colorScheme.onSurface,
-                                          fontSize: 15,
-                                          height: 1.5,
+                                      if (m.data['reply'] != null && !m.deleted)
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          margin: const EdgeInsets.only(
+                                            bottom: 8,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black12,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '↪ ${m.data['reply']['text']}',
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                            ),
+                                          ),
                                         ),
-                                      ),
+                                      if (m.kind != 'text' && !m.deleted)
+                                        AttachmentBubble(
+                                          key: ValueKey(m.id),
+                                          controller: c,
+                                          message: m,
+                                        ),
+                                      if (m.kind == 'text' || m.deleted)
+                                        Text(
+                                          m.displayText,
+                                          style: TextStyle(
+                                            color: mine
+                                                ? Colors.white
+                                                : Theme.of(
+                                                    context,
+                                                  ).colorScheme.onSurface,
+                                            fontSize: 15,
+                                            height: 1.5,
+                                          ),
+                                        ),
+                                      if (m.editedText != null && !m.deleted)
+                                        const Text(
+                                          'diedit',
+                                          style: TextStyle(fontSize: 10),
+                                        ),
+                                      if (m.reactions.isNotEmpty)
+                                        Text(m.reactions.values.join(' ')),
                                       const SizedBox(height: 6),
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -300,40 +398,97 @@ class _ChatScreenState extends State<ChatScreen> {
                           'Kontak diblokir. Pesan baru tidak dapat dikirim.',
                         ),
                       )
-                    : Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: TextField(
-                              controller: composer,
-                              minLines: 1,
-                              maxLines: 5,
-                              maxLength: 10000,
-                              textCapitalization: TextCapitalization.sentences,
-                              decoration: const InputDecoration(
-                                hintText: 'Tulis pesan…',
-                                counterText: '',
-                                contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 18,
-                                  vertical: 14,
+                          if (reply != null)
+                            ListTile(
+                              dense: true,
+                              title: const Text('Membalas'),
+                              subtitle: Text(
+                                reply!.displayText,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: IconButton(
+                                tooltip: 'Batal membalas',
+                                onPressed: () => setState(() => reply = null),
+                                icon: const Icon(Icons.close),
+                              ),
+                            ),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              IconButton(
+                                tooltip: 'Lampiran',
+                                onPressed: sending ? null : _attach,
+                                icon: const Icon(Icons.attach_file),
+                              ),
+                              Expanded(
+                                child: TextField(
+                                  controller: composer,
+                                  minLines: 1,
+                                  maxLines: 5,
+                                  maxLength: 10000,
+                                  textCapitalization:
+                                      TextCapitalization.sentences,
+                                  decoration: const InputDecoration(
+                                    hintText: 'Tulis pesan…',
+                                    counterText: '',
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 18,
+                                      vertical: 14,
+                                    ),
+                                  ),
+                                  onChanged: (value) {
+                                    c.setDraft(chat.id, value);
+                                    if (!blocked &&
+                                        DateTime.now()
+                                                .difference(lastTyping)
+                                                .inMilliseconds >
+                                            1500) {
+                                      lastTyping = DateTime.now();
+                                      presence
+                                          ?.sendBroadcastMessage(
+                                            event: 'typing',
+                                            payload: {
+                                              'user': c.me!.id,
+                                              'typing': value.isNotEmpty,
+                                            },
+                                          )
+                                          .then<void>((_) {})
+                                          .catchError((Object _) {});
+                                    }
+                                  },
+                                  onSubmitted: (_) => send(),
                                 ),
                               ),
-                              onChanged: (value) {
-                                c.setDraft(chat.id, value);
-                              },
-                              onSubmitted: (_) => send(),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          IconButton.filled(
-                            tooltip: 'Kirim pesan',
-                            style: IconButton.styleFrom(
-                              backgroundColor: brand,
-                              foregroundColor: Colors.white,
-                              minimumSize: const Size(52, 52),
-                            ),
-                            onPressed: sending ? null : send,
-                            icon: const Icon(Icons.arrow_upward_rounded),
+                              IconButton(
+                                tooltip: 'Pesan suara',
+                                onPressed: sending
+                                    ? null
+                                    : () => showModalBottomSheet<void>(
+                                        context: context,
+                                        isScrollControlled: true,
+                                        builder: (_) => VoiceRecorderSheet(
+                                          controller: c,
+                                          chat: chat,
+                                        ),
+                                      ),
+                                icon: const Icon(Icons.mic_none),
+                              ),
+                              const SizedBox(width: 4),
+                              IconButton.filled(
+                                tooltip: 'Kirim pesan',
+                                style: IconButton.styleFrom(
+                                  backgroundColor: brand,
+                                  foregroundColor: Colors.white,
+                                  minimumSize: const Size(52, 52),
+                                ),
+                                onPressed: sending ? null : send,
+                                icon: const Icon(Icons.arrow_upward_rounded),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -344,6 +499,168 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     },
   );
+  Future<void> _call(bool video) async {
+    try {
+      await CallService.of(
+        widget.controller,
+      ).start(widget.chat, withVideo: video);
+    } catch (_) {
+      if (mounted) showNotice(context, 'Panggilan tersedia setelah masuk.');
+    }
+  }
+
+  Future<void> _attach() async {
+    try {
+      final selected = await FilePicker.pickFile();
+      if (selected == null || selected.path == null || !mounted) return;
+      final file = selected;
+      final fileSize = await File(file.path!).length();
+      if (!mounted) return;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Kirim lampiran?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (RegExp(
+                r'\.(jpg|jpeg|png|webp)$',
+                caseSensitive: false,
+              ).hasMatch(file.name))
+                Image.file(File(file.path!), height: 180, fit: BoxFit.contain),
+              const SizedBox(height: 12),
+              Text(file.name),
+              Text('${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Kirim'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+      setState(() => sending = true);
+      await MediaService.send(
+        widget.controller,
+        widget.chat,
+        File(file.path!),
+        file.name,
+      );
+    } catch (e) {
+      if (mounted) {
+        showNotice(
+          context,
+          e is StateError
+              ? e.message
+              : 'Lampiran belum dapat dikirim. Coba lagi.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => sending = false);
+    }
+  }
+
+  Future<void> _react(ChatMessage m) async {
+    final emoji = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            for (final emoji in ['👍', '❤️', '😂', '😮', '😢', '🙏', ''])
+              TextButton(
+                onPressed: () => Navigator.pop(context, emoji),
+                child: Text(
+                  emoji.isEmpty ? 'Hapus' : emoji,
+                  style: const TextStyle(fontSize: 26),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (emoji != null) {
+      await widget.controller.control(widget.chat, m, 'reaction', value: emoji);
+    }
+  }
+
+  Future<void> _edit(ChatMessage m) async {
+    final field = TextEditingController(text: m.displayText);
+    final text = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit pesan'),
+        content: TextField(controller: field, maxLength: 10000, maxLines: 5),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, field.text),
+            child: const Text('Simpan'),
+          ),
+        ],
+      ),
+    );
+    field.dispose();
+    if (text != null) {
+      await widget.controller.control(widget.chat, m, 'edit', value: text);
+    }
+  }
+
+  Future<void> _forward(ChatMessage m) async {
+    final target = await showModalBottomSheet<Conversation>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const SectionLabel('Teruskan ke'),
+            for (final c in widget.controller.chats)
+              ListTile(
+                title: Text(c.peer.name),
+                onTap: () => Navigator.pop(context, c),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (target == null) return;
+    try {
+      if (m.kind == 'text') {
+        await widget.controller.send(
+          target,
+          m.displayText,
+          data: {'forwarded': true},
+        );
+      } else {
+        final file = await MediaService.download(widget.controller, m);
+        try {
+          await MediaService.send(
+            widget.controller,
+            target,
+            file,
+            m.data['name'],
+            voice: m.kind == 'voice',
+            duration: m.data['duration'],
+          );
+        } finally {
+          if (await file.exists()) await file.delete();
+        }
+      }
+      if (mounted) showNotice(context, 'Pesan diteruskan.');
+    } catch (_) {
+      if (mounted) showNotice(context, 'Belum dapat meneruskan pesan.');
+    }
+  }
+
   String _deliveryLabel(Delivery value) => switch (value) {
     Delivery.queued => 'Menunggu koneksi',
     Delivery.sent => 'Diterima server',
@@ -359,6 +676,65 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.reply),
+              title: const Text('Balas'),
+              onTap: () {
+                Navigator.pop(context);
+                setState(() => reply = m);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.emoji_emotions_outlined),
+              title: const Text('Reaksi'),
+              onTap: () {
+                Navigator.pop(context);
+                _react(m);
+              },
+            ),
+            if (m.senderId == widget.controller.me!.id &&
+                m.kind == 'text' &&
+                !m.deleted)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit pesan'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _edit(m);
+                },
+              ),
+            if (m.senderId == widget.controller.me!.id && !m.deleted)
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Hapus untuk semua'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (await confirmAction(
+                    this.context,
+                    'Hapus untuk semua?',
+                    'Penghapusan dikirim ke perangkat penerima. Salinan yang sudah disimpan di luar aplikasi tetap bisa ada.',
+                  )) {
+                    await widget.controller.control(widget.chat, m, 'delete');
+                  }
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.delete_sweep_outlined),
+              title: const Text('Hapus untuk saya'),
+              onTap: () {
+                Navigator.pop(context);
+                widget.controller.hideMessage(m.id);
+              },
+            ),
+            if (!m.deleted)
+              ListTile(
+                leading: const Icon(Icons.forward),
+                title: const Text('Teruskan'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _forward(m);
+                },
+              ),
+            ListTile(
               leading: const Icon(Icons.copy_outlined),
               title: const Text('Salin teks'),
               onTap: () {
@@ -366,14 +742,21 @@ class _ChatScreenState extends State<ChatScreen> {
                 Navigator.pop(context);
               },
             ),
-            if (m.delivery == Delivery.failed)
+            if (m.delivery == Delivery.queued)
+              ListTile(
+                leading: const Icon(Icons.cancel_outlined),
+                title: const Text('Batalkan antrean'),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.controller.cancelQueued(m.id);
+                },
+              ),
+            if (m.delivery == Delivery.failed && m.data['_cancelled'] != true)
               ListTile(
                 leading: const Icon(Icons.refresh),
                 title: const Text('Coba kirim lagi'),
                 onTap: () {
-                  m.delivery = Delivery.queued;
-                  widget.controller.persist();
-                  widget.controller.sync();
+                  widget.controller.retryMessage(m.id);
                   Navigator.pop(context);
                 },
               ),
@@ -411,15 +794,30 @@ class _ChatScreenState extends State<ChatScreen> {
               if (p.bio.isNotEmpty)
                 Padding(padding: const EdgeInsets.all(20), child: Text(p.bio)),
               const SizedBox(height: 20),
-              const ListTile(
+              ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.verified_user_outlined, color: ice),
                 title: Text('Verifikasi keamanan'),
-                subtitle: Text(
-                  'Identitas yang berubah akan menahan pengiriman. Verifikasi QR dan persetujuan kunci baru menunggu pengujian keamanan.',
+                subtitle: const Text('Bandingkan nomor keamanan kedua akun.'),
+                onTap: () => Navigator.push(
+                  this.context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => SafetyScreen(
+                      controller: widget.controller,
+                      chat: widget.chat,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.flag_outlined),
+                title: const Text('Laporkan kontak'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _report();
+                },
+              ),
               OutlinedButton.icon(
                 onPressed: () {
                   Navigator.pop(context);
@@ -445,6 +843,54 @@ class _ChatScreenState extends State<ChatScreen> {
         await widget.controller.block(widget.chat.peer);
       } catch (_) {
         if (mounted) showNotice(context, 'Belum dapat memblokir. Coba lagi.');
+      }
+    }
+  }
+
+  Future<void> _report() async {
+    final reason = TextEditingController();
+    final text = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Laporkan kontak'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Alasan ini dapat dibaca administrator. Isi chat tidak dilampirkan otomatis.',
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: reason,
+              maxLength: 1000,
+              maxLines: 4,
+              decoration: const InputDecoration(labelText: 'Alasan laporan'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, reason.text.trim()),
+            child: const Text('Kirim laporan'),
+          ),
+        ],
+      ),
+    );
+    reason.dispose();
+    if (text == null || text.isEmpty) return;
+    try {
+      await widget.controller.client!.rpc(
+        'submit_report',
+        params: {'chat': widget.chat.id, 'reason': text},
+      );
+      if (mounted) showNotice(context, 'Laporan dikirim ke administrator.');
+    } catch (_) {
+      if (mounted) {
+        showNotice(context, 'Laporan belum dapat dikirim. Coba lagi nanti.');
       }
     }
   }

@@ -3,7 +3,7 @@
 Android-first Flutter messenger based on `Adoetz_Chat_PRD_v1.0.md`.
 Application ID: `com.adoetzchat.messenger`. Android 10+. Flutter 3.44.1 / Dart 3.12.1.
 
-**0.1.0 is an internal technical prototype, not a production-secure messenger.**
+**0.2.0 is an internal technical prototype. Independent security review and physical-device acceptance remain release gates.**
 
 ## What works in this alpha
 
@@ -16,6 +16,12 @@ Application ID: `com.adoetzchat.messenger`. Android 10+. Flutter 3.44.1 / Dart 3
 - Idempotent server sends, paginated cursor catch-up, Realtime hints, encrypted delivery/read receipt events, read receipt preference, retry backoff and blocking.
 - Current server-side role/status checks. Admin account lists, suspend/unsuspend, restricted reset-pending state, one-time invites, step-up password verification and audit logs.
 - Optional Firebase client initialization, contextual notification permission and protected token registration.
+- Multi-device login with independent Signal identities, encrypted fanout to peers and your other devices, per-device push tokens and session revocation. Existing keys and history are retained during upgrade.
+- Encrypted photo/video/document attachments, durable upload queues, voice recording/playback, replies, edits, reactions, forwarding and deletion events.
+- Profile pictures, unblock/report actions, safety numbers and optional Android screenshot protection.
+- FCM HTTP v1 dispatch queue, background decryption and delivered receipts, private local notifications and notification navigation.
+- Voice/video WebRTC calls with encrypted signaling, short-lived TURN credentials, Android incoming-call integration, call history, mute/speaker/camera controls and ICE restart.
+- Administrator invite revocation, role changes, session revocation, temporary-password resets and mandatory user password replacement.
 - GitHub Actions analysis, tests, APK + SHA-256 artifact, isolated PostgreSQL authorization tests and a separate secret-gated signed candidate workflow.
 
 ## Run locally
@@ -35,7 +41,7 @@ Never include Supabase secret/service-role keys in client configuration.
 
 ## Supabase staging setup
 
-Use a dedicated staging project. This workspace's GitHub build now targets the owner's selected self-hosted server, `https://supabase.adoetz52.my.id`, with Firebase Android configuration stored in an encrypted Actions secret. The owner is installing the schema and function folders manually; see `docs/self-hosted-setup.md`. The previously connected Supabase Cloud project was not modified.
+The configured backend is the owner's self-hosted server, `https://supabase.adoetz52.my.id`. See `docs/self-hosted-setup.md` and `docs/implementation-status.md`. The unrelated Supabase Cloud project is untouched. Test all migrations in an isolated database before applying upgrades; back up live Auth and app data first.
 
 1. Review `supabase/migrations/20261028011508_adoetz_foundation.sql` and apply it using the SQL editor or the Supabase CLI migration workflow. The `private` schema must not be exposed by the Data API.
 2. Enable email/password signup, disable email confirmation as specified in the PRD, and set the password minimum to 12. The Auth insert trigger validates and consumes invites atomically, including direct public signup calls. Keep provider rate limits enabled.
@@ -63,7 +69,7 @@ Register the Android app as `com.adoetzchat.messenger`. Place its configuration 
 python tools/configure_firebase.py android/app/google-services.json
 ```
 
-Set `FIREBASE_ENABLED` to `true` in the local Dart configuration. The script generates the native resources Firebase initialization requires. Client registration is implemented; a durable HTTP v1 push dispatch worker and server credentials still need implementation and staging validation. No plaintext messages or private keys may be sent in push payloads.
+Set `FIREBASE_ENABLED` to `true` in the local Dart configuration. The script generates native Firebase resources. Server dispatch uses `push-dispatch` and `tools/push_worker.py`; the Firebase service account remains in the server's private configuration. No plaintext messages or private keys are sent in push payloads.
 
 ## GitHub builds
 
@@ -96,6 +102,6 @@ Backend CI creates an isolated PostgreSQL 17 database, applies the actual migrat
 
 ## Remaining PRD gates
 
-See `docs/implementation-status.md` and `docs/security.md`. Media/voice notes, WebRTC calls, QR verification, key replacement, app lock, full push dispatch and the production signing/device matrix are not finished. Calls are hidden in navigation, as required by the PRD. No button simulates a real call or upload.
+See `docs/implementation-status.md` and `docs/security.md` for evidence and remaining acceptance gates. Update every participating device to 0.2.0 using the stable signed APK, without uninstalling or clearing app data. Original 0.1.0 history remains readable on its original device; a newly added device receives future messages and does not receive old private keys from the server. Group chat and encrypted backup remain the PRD's P2 scope.
 
 The selected Signal dependency uses GPL-3.0. See `THIRD_PARTY_NOTICES.md`; confirm distribution licensing before a release. No security audit or production readiness is claimed.

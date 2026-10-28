@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:device_runtime/device_runtime.dart';
 
 abstract class Vault {
   Future<String?> read(String key);
@@ -14,10 +15,16 @@ class DeviceVault implements Vault {
   @override
   Future<String?> read(String key) => _storage.read(key: key);
   @override
-  Future<void> write(String key, String value) =>
-      _storage.write(key: key, value: value);
+  Future<void> write(String key, String value) async {
+    await _storage.write(key: key, value: value);
+    await DeviceRuntime.flushSecureStorage();
+  }
+
   @override
-  Future<void> delete(String key) => _storage.delete(key: key);
+  Future<void> delete(String key) async {
+    await _storage.delete(key: key);
+    await DeviceRuntime.flushSecureStorage();
+  }
 }
 
 class MemoryVault implements Vault {

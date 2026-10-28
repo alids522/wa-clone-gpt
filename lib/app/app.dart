@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../core/controller.dart';
 import '../features/auth_screen.dart';
 import '../features/inbox_screen.dart';
+import '../features/password_screen.dart';
 import 'theme.dart';
 
 class AdoetzApp extends StatelessWidget {
@@ -17,7 +18,9 @@ class AdoetzApp extends StatelessWidget {
       theme: adoetzTheme(Brightness.light),
       darkTheme: adoetzTheme(Brightness.dark),
       themeMode: controller.theme,
-      home: controller.me == null
+      home: controller.passwordResetRequired
+          ? PasswordScreen(controller: controller, forced: true)
+          : controller.me == null
           ? AuthScreen(controller: controller)
           : HomeScreen(controller: controller),
     ),

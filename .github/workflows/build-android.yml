@@ -51,9 +51,9 @@ jobs:
       - name: Prepare APK and checksum
         run: |
           mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-debug.apk dist/adoetz-chat-0.1.0-alpha.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk dist/adoetz-chat-0.2.0-internal.apk
           cd dist
-          sha256sum adoetz-chat-0.1.0-alpha.apk > SHA256SUMS.txt
+          sha256sum adoetz-chat-0.2.0-internal.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: adoetz-chat-android-alpha-${{ github.run_number }}

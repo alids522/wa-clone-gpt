@@ -18,6 +18,9 @@ class PersistentSignalStore implements SignalProtocolStore {
     final store = PersistentSignalStore({
       'identity': base64Encode(identity.serialize()),
       'registration': generateRegistrationId(false),
+      'next_prekey': 51,
+      'signed_id': 1,
+      'signed_at': DateTime.now().toUtc().toIso8601String(),
     });
     for (final key in generatePreKeys(1, 50)) {
       await store.storePreKey(key.id, key);
@@ -28,13 +31,14 @@ class PersistentSignalStore implements SignalProtocolStore {
   }
 
   Future<Map<String, dynamic>> publicBundle() async {
-    final signed = await loadSignedPreKey(1);
+    final signedId = data['signed_id'] as int? ?? 1;
+    final signed = await loadSignedPreKey(signedId);
     return {
       'identity_key': base64Encode(
         (await getIdentityKeyPair()).getPublicKey().serialize(),
       ),
       'registration_id': await getLocalRegistrationId(),
-      'signed_prekey_id': 1,
+      'signed_prekey_id': signedId,
       'signed_prekey': base64Encode(signed.getKeyPair().publicKey.serialize()),
       'signature': base64Encode(signed.signature),
       'prekeys': [
@@ -49,6 +53,30 @@ class PersistentSignalStore implements SignalProtocolStore {
           },
       ],
     };
+  }
+
+  Future<void> replenish() async {
+    final keys = _map('prekeys');
+    if (keys.length < 20) {
+      final next = data['next_prekey'] as int? ?? 51;
+      final count = 50 - keys.length;
+      for (final key in generatePreKeys(next, count)) {
+        await storePreKey(key.id, key);
+      }
+      data['next_prekey'] = next + count;
+    }
+    final stamp = DateTime.tryParse(data['signed_at'] ?? '');
+    if (stamp == null) {
+      data['signed_at'] = DateTime.now().toUtc().toIso8601String();
+    } else if (DateTime.now().difference(stamp).inDays >= 7) {
+      final next = (data['signed_id'] as int? ?? 1) + 1;
+      await storeSignedPreKey(
+        next,
+        generateSignedPreKey(await getIdentityKeyPair(), next),
+      );
+      data['signed_id'] = next;
+      data['signed_at'] = DateTime.now().toUtc().toIso8601String();
+    }
   }
 
   @override

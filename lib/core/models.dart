@@ -8,8 +8,10 @@ class Person {
     this.bio = '',
     this.role = 'user',
     this.status = 'active',
+    this.avatarPath,
   });
   final String id, username, name, bio, role, status;
+  final String? avatarPath;
   factory Person.fromJson(Map<String, dynamic> j) => Person(
     id: j['id'] as String,
     username: j['username'] as String,
@@ -17,6 +19,7 @@ class Person {
     bio: (j['bio'] ?? '') as String,
     role: (j['role'] ?? 'user') as String,
     status: (j['status'] ?? 'active') as String,
+    avatarPath: j['avatar_path'],
   );
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -25,6 +28,7 @@ class Person {
     'bio': bio,
     'role': role,
     'status': status,
+    'avatar_path': avatarPath,
   };
 }
 
@@ -38,13 +42,22 @@ class ChatMessage {
     this.delivery = Delivery.queued,
     this.envelope,
     this.serverId,
+    this.sequence,
     this.kind = 'text',
-  });
+    Map<String, dynamic>? data,
+  }) : data = data ?? {};
   final String id, chatId, senderId, text;
   final String kind;
+  final Map<String, dynamic> data;
+  String? editedText;
+  bool deleted = false;
+  final Map<String, String> reactions = {};
+  String get displayText => deleted ? 'Pesan dihapus' : editedText ?? text;
+  bool get visible => ['text', 'attachment', 'voice'].contains(kind);
   DateTime at;
   Delivery delivery;
   String? serverId;
+  int? sequence;
   Map<String, dynamic>? envelope;
   factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
     id: j['id'],
@@ -57,7 +70,9 @@ class ChatMessage {
         ? null
         : Map<String, dynamic>.from(j['envelope']),
     serverId: j['server_id'],
+    sequence: j['sequence'],
     kind: j['kind'] ?? 'text',
+    data: Map<String, dynamic>.from(j['data'] ?? {}),
   );
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -68,7 +83,9 @@ class ChatMessage {
     'delivery': delivery.name,
     'envelope': envelope,
     'server_id': serverId,
+    'sequence': sequence,
     'kind': kind,
+    'data': data,
   };
 }
 
@@ -81,7 +98,7 @@ class Conversation {
     this.unread = 0,
   });
   final String id;
-  final Person peer;
+  Person peer;
   bool pinned, muted;
   int unread;
   factory Conversation.fromJson(Map<String, dynamic> j) => Conversation(

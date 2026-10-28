@@ -1,22 +1,35 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+import 'package:device_runtime/device_runtime.dart';
 import 'models.dart';
 import 'push_service.dart';
 import 'signal_store.dart';
 import 'vault.dart';
+import 'streaming_storage.dart';
 
-class ChatController extends ChangeNotifier {
-  ChatController({required this.vault, this.client});
+class ChatController extends ChangeNotifier with WidgetsBindingObserver {
+  ChatController({
+    required this.vault,
+    this.client,
+    this.background = false,
+    this.onSyncError,
+  });
+  final void Function(Object, StackTrace)? onSyncError;
+  final bool background;
   final Vault vault;
   final SupabaseClient? client;
   ThemeMode theme = ThemeMode.system;
   Person? me;
+  bool passwordResetRequired = false;
+  bool protectScreen = false;
   bool preview = false, busy = false, offline = false, readReceipts = true;
   String? error;
   final List<Conversation> chats = [];
@@ -25,6 +38,11 @@ class ChatController extends ChangeNotifier {
   final Set<String> blocked = {};
   final Map<String, String> cursors = {};
   PersistentSignalStore? signalStore;
+  String? deviceId;
+  int _revision = 0;
+  final Set<String> hidden = {};
+  final Map<String, String> _dirtyDrafts = {};
+  final StreamController<ChatMessage> events = StreamController.broadcast();
   Timer? _timer;
   Timer? _draftTimer;
   StreamSubscription<AuthState>? _auth;
@@ -33,13 +51,33 @@ class ChatController extends ChangeNotifier {
   Future<void> _writes = Future.value();
   DateTime _nextRetry = DateTime(2000);
   int _attempt = 0;
-  bool _syncing = false, _disposed = false;
+  bool _syncing = false, _disposed = false, _observing = false;
+  bool _syncOnOpen = true;
+  bool _syncAgain = false, _uploading = false;
+  DateTime _uploadRetry = DateTime(2000);
+  final _uploader = StreamingStorage();
   String? activeChat;
+  bool foreground = true;
+  String? get readingChat => foreground && !background ? activeChat : null;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    foreground = state == AppLifecycleState.resumed;
+    if (foreground) {
+      final chat = chats.where((c) => c.id == activeChat).firstOrNull;
+      if (chat != null) {
+        markRead(chat);
+      } else {
+        sync();
+      }
+    }
+  }
+
   bool get configured => client != null;
   bool get isAdmin => me?.role == 'admin' && me?.status == 'active' && !preview;
   void notifyPreferences() => notifyListeners();
   void setDraft(String chatId, String value) {
     drafts[chatId] = value;
+    _dirtyDrafts[chatId] = value;
     _draftTimer?.cancel();
     _draftTimer = Timer(const Duration(milliseconds: 400), () {
       persist().catchError((Object _) {
@@ -49,31 +87,80 @@ class ChatController extends ChangeNotifier {
     });
   }
 
-  List<ChatMessage> inChat(String id) =>
-      messages.where((m) => m.chatId == id && m.kind == 'text').toList()
-        ..sort((a, b) {
-          final time = a.at.compareTo(b.at);
-          return time == 0 ? a.id.compareTo(b.id) : time;
-        });
+  List<ChatMessage> inChat(String id) {
+    final visible = {
+      for (final m in messages.where(
+        (m) => m.chatId == id && m.visible && !hidden.contains(m.id),
+      ))
+        m.id: ChatMessage.fromJson(m.toJson()),
+    };
+    final controls =
+        messages.where((m) => m.chatId == id && m.kind == 'control').toList()
+          ..sort(_messageOrder);
+    for (final event in controls) {
+      final target = visible[event.data['target']];
+      if (target == null) {
+        continue; // Tombstones remain in the journal for later sync.
+      }
+      switch (event.data['op']) {
+        case 'delete':
+          if (event.senderId == target.senderId) target.deleted = true;
+        case 'edit':
+          if (event.senderId == target.senderId &&
+              !target.deleted &&
+              target.kind == 'text') {
+            target.editedText = event.data['text'] as String?;
+          }
+        case 'reaction':
+          final emoji = event.data['emoji'] as String? ?? '';
+          if (emoji.isEmpty) {
+            target.reactions.remove(event.senderId);
+          } else {
+            target.reactions[event.senderId] = emoji;
+          }
+      }
+    }
+    return visible.values.toList()..sort((a, b) {
+      if ((a.serverId == null) != (b.serverId == null)) {
+        return a.serverId == null ? 1 : -1;
+      }
+      return _messageOrder(a, b);
+    });
+  }
 
-  Future<void> initialize() async {
+  static int _messageOrder(ChatMessage a, ChatMessage b) {
+    if (a.sequence != null && b.sequence != null) {
+      return a.sequence!.compareTo(b.sequence!);
+    }
+    final time = a.at.compareTo(b.at);
+    return time == 0 ? a.id.compareTo(b.id) : time;
+  }
+
+  Future<void> initialize({bool syncOnOpen = true}) async {
+    _syncOnOpen = syncOnOpen;
+    if (!background) {
+      WidgetsBinding.instance.addObserver(this);
+      _observing = true;
+    }
     final prefs = await SharedPreferences.getInstance();
     theme = ThemeMode.values.firstWhere(
       (t) => t.name == prefs.getString('theme'),
       orElse: () => ThemeMode.system,
     );
-    _auth = client?.auth.onAuthStateChange.listen(
-      (event) {
-        if (event.event == AuthChangeEvent.signedOut) {
-          _clear();
+    if (!background) {
+      _auth = client?.auth.onAuthStateChange.listen(
+        (event) {
+          if (event.event == AuthChangeEvent.signedOut) {
+            _clear();
+            notifyListeners();
+          }
+        },
+        onError: (_) {
+          error = 'Sesi berakhir. Masuk kembali untuk melanjutkan.';
           notifyListeners();
-        }
-      },
-      onError: (_) {
-        error = 'Sesi berakhir. Masuk kembali untuk melanjutkan.';
-        notifyListeners();
-      },
-    );
+        },
+      );
+    }
     if (client?.auth.currentSession != null) {
       try {
         await _openAccount();
@@ -141,6 +228,10 @@ class ChatController extends ChangeNotifier {
     } on AuthException {
       error =
           'Username/email atau password tidak sesuai, atau kode undangan tidak dapat digunakan.';
+    } on PlatformException catch (e) {
+      error = e.code == 'restart_required'
+          ? e.message
+          : 'Penyimpanan aman belum dapat dibuka. Buka ulang aplikasi.';
     } on TimeoutException {
       error = 'Koneksi terlalu lama. Periksa jaringan lalu coba lagi.';
     } on StateError catch (e) {
@@ -159,9 +250,14 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _openAccount() async {
+  Future<void> _prepareAccount() async {
     final uid = client!.auth.currentUser!.id;
     final state = await readJson(vault, 'account_$uid');
+    _revision = state['revision'] ?? 0;
+    deviceId = state['device_id'] ?? const Uuid().v4();
+    hidden
+      ..clear()
+      ..addAll(List<String>.from(state['hidden'] ?? []));
     Map<String, dynamic> profile;
     Map<String, dynamic> account;
     try {
@@ -181,6 +277,10 @@ class ChatController extends ChangeNotifier {
       offline = true;
     }
     if (account['status'] != 'active') {
+      if (account['status'] == 'reset_required') {
+        passwordResetRequired = true;
+        return;
+      }
       throw StateError('Akun ini dinonaktifkan. Hubungi administrator.');
     }
     me = Person.fromJson({...profile, ...Map<String, dynamic>.from(account)});
@@ -209,18 +309,36 @@ class ChatController extends ChangeNotifier {
       ..clear()
       ..addAll(List<String>.from(state['blocked'] ?? []));
     readReceipts = state['read_receipts'] ?? true;
+    protectScreen = state['protect_screen'] ?? false;
     signalStore = state['crypto'] == null
         ? await PersistentSignalStore.create()
         : PersistentSignalStore(Map<String, dynamic>.from(state['crypto']));
-    await persist(); // Retain identity before publishing public keys.
+    await signalStore!.replenish();
+    await _commit(); // Retain identity before publishing public keys.
     if (!offline) {
-      await client!
+      deviceId = await client!
           .rpc(
-            'register_device',
-            params: {'bundle': await signalStore!.publicBundle()},
+            'register_device_v2',
+            params: {
+              'requested_id': deviceId,
+              'bundle': await signalStore!.publicBundle(),
+              'device_label': 'Android',
+            },
           )
           .timeout(const Duration(seconds: 20));
+      await _commit();
     }
+  }
+
+  Future<void> _openAccount() async {
+    await _exclusive(_prepareAccount);
+    if (passwordResetRequired || me == null) return;
+    final uid = me!.id;
+    if (background) {
+      if (_syncOnOpen) await sync();
+      return;
+    }
+    if (vault is DeviceVault) await DeviceRuntime.protectScreen(protectScreen);
     _channel = client!
         .channel('inbox-$uid')
         .onPostgresChanges(
@@ -237,6 +355,7 @@ class ChatController extends ChangeNotifier {
       if (DateTime.now().isAfter(_nextRetry)) sync();
     });
     await sync();
+    PushService.restore(this).catchError((Object _) {});
   }
 
   // UI preference/draft writes must wait for a whole crypto transaction.
@@ -246,29 +365,107 @@ class ChatController extends ChangeNotifier {
   Future<void> _commit() async {
     if (preview || me == null) return;
     final key = 'account_${me!.id}';
+    final writtenDrafts = Map<String, String>.from(drafts);
     final snapshot = jsonEncode({
       'me': me!.toJson(),
+      'device_id': deviceId,
+      'revision': _revision + 1,
+      'hidden': hidden.toList(),
       'chats': chats.map((c) => c.toJson()).toList(),
       'messages': messages.map((m) => m.toJson()).toList(),
-      'drafts': drafts,
+      'drafts': writtenDrafts,
       'cursors': cursors,
       'blocked': blocked.toList(),
       'read_receipts': readReceipts,
+      'protect_screen': protectScreen,
       'crypto': signalStore?.data,
     });
     final write = _writes.then((_) => vault.write(key, snapshot));
     _writes = write.catchError((Object _) {});
     await write;
+    _revision++;
+    _dirtyDrafts.removeWhere((key, value) => writtenDrafts[key] == value);
   }
 
   Future<void> _exclusive(Future<void> Function() operation) {
-    final result = _serial.then((_) => operation());
+    final result = _serial.then((_) async {
+      String? token;
+      try {
+        if (vault is DeviceVault && !preview) {
+          token = await DeviceRuntime.acquire();
+          if (me != null) {
+            final latest = await readJson(vault, 'account_${me!.id}');
+            if ((latest['revision'] as int? ?? 0) > _revision) {
+              _restoreTransaction(latest);
+            }
+          }
+        }
+        await operation();
+      } finally {
+        if (token != null) await DeviceRuntime.release(token);
+      }
+    });
     _serial = result.catchError((Object _) {});
     return result;
   }
 
+  void _restoreTransaction(Map<String, dynamic> state) {
+    _revision = state['revision'] ?? 0;
+    deviceId = state['device_id'];
+    signalStore = PersistentSignalStore(
+      Map<String, dynamic>.from(state['crypto']),
+    );
+    messages
+      ..clear()
+      ..addAll(
+        (state['messages'] as List).map(
+          (j) => ChatMessage.fromJson(Map<String, dynamic>.from(j)),
+        ),
+      );
+    for (final j in state['chats'] as List) {
+      final restored = Conversation.fromJson(Map<String, dynamic>.from(j));
+      final existing = chats.where((c) => c.id == restored.id).firstOrNull;
+      if (existing == null) {
+        chats.add(restored);
+      } else {
+        existing.peer = restored.peer;
+        existing.unread = restored.unread;
+        existing.pinned = restored.pinned;
+        existing.muted = restored.muted;
+      }
+    }
+    drafts
+      ..clear()
+      ..addAll(Map<String, String>.from(state['drafts'] ?? {}))
+      ..addAll(_dirtyDrafts);
+    cursors
+      ..clear()
+      ..addAll(Map<String, String>.from(state['cursors'] ?? {}));
+    blocked
+      ..clear()
+      ..addAll(List<String>.from(state['blocked'] ?? []));
+    hidden
+      ..clear()
+      ..addAll(List<String>.from(state['hidden'] ?? []));
+    readReceipts = state['read_receipts'] ?? true;
+    protectScreen = state['protect_screen'] ?? false;
+  }
+
   Future<void> sync() async {
-    if (preview || me == null || _syncing || _disposed) return;
+    if (preview || me == null || _disposed) return;
+    if (_syncing) {
+      _syncAgain = true;
+      return;
+    }
+    if (!background && !_uploading && DateTime.now().isAfter(_uploadRetry)) {
+      _uploading = true;
+      _uploadPending()
+          .catchError((Object failure, StackTrace stack) {
+            onSyncError?.call(failure, stack);
+            _uploadRetry = DateTime.now().add(const Duration(seconds: 30));
+          })
+          .whenComplete(() => _uploading = false);
+    }
     _syncing = true;
     try {
       await _exclusive(() async {
@@ -285,12 +482,18 @@ class ChatController extends ChangeNotifier {
           username: me!.username,
           name: me!.name,
           bio: me!.bio,
+          avatarPath: me!.avatarPath,
           role: current['role'],
           status: current['status'],
         );
         final rows = await client!.rpc('list_chats');
         for (final row in rows as List) {
-          if (!chats.any((c) => c.id == row['id'])) {
+          final existing = chats.where((c) => c.id == row['id']).firstOrNull;
+          if (existing != null) {
+            existing.peer = Person.fromJson(
+              Map<String, dynamic>.from(row['peer']),
+            );
+          } else {
             chats.add(
               Conversation(
                 id: row['id'],
@@ -302,21 +505,28 @@ class ChatController extends ChangeNotifier {
         for (final chat in chats) {
           var more = true;
           while (more) {
-            final events = await client!.rpc(
-              'sync_messages',
+            final page = await client!.rpc(
+              deviceId == null ? 'sync_messages' : 'sync_device_messages',
               params: {
                 'chat': chat.id,
                 'after_sequence': int.tryParse(cursors[chat.id] ?? '') ?? 0,
+                if (deviceId != null) 'device': deviceId,
               },
             );
-            more = (events as List).length == 50;
-            for (final row in events) {
+            more = (page as List).length == 50;
+            for (final row in page) {
               final sequence = row['sequence'].toString();
-              if (row['sender_id'] == me!.id) {
+              final transport = Map<String, dynamic>.from(row['ciphertext']);
+              final multi = transport['protocol'] == 'signal-devices-v2';
+              final ownDevice = multi
+                  ? transport['sender_device'] == deviceId
+                  : row['sender_id'] == me!.id;
+              if (ownDevice) {
                 for (final m in messages.where(
                   (m) => m.id == row['client_message_id'],
                 )) {
                   m.serverId = row['id'];
+                  m.sequence = row['sequence'];
                   m.at = DateTime.parse(row['created_at']);
                   if (m.delivery == Delivery.queued ||
                       m.delivery == Delivery.failed) {
@@ -324,32 +534,52 @@ class ChatController extends ChangeNotifier {
                   }
                 }
               } else if (!messages.any((m) => m.serverId == row['id'])) {
-                final envelope = Map<String, dynamic>.from(row['ciphertext']);
+                final envelope = multi
+                    ? Map<String, dynamic>.from(
+                        transport['envelopes'][deviceId],
+                      )
+                    : transport;
                 final before = jsonEncode(signalStore!.data);
                 final beforeLength = messages.length;
                 final unread = chat.unread;
                 final statuses = {for (final m in messages) m.id: m.delivery};
                 try {
                   final content = jsonDecode(
-                    await SignalEngine(
-                      signalStore!,
-                    ).decrypt(chat.peer.id, envelope),
+                    await SignalEngine(signalStore!).decrypt(
+                      multi ? transport['sender_device'] : chat.peer.id,
+                      envelope,
+                    ),
                   );
                   if (content['chat'] != chat.id ||
                       content['sender'] != row['sender_id'] ||
                       content['id'] != row['client_message_id']) {
                     throw StateError('Invalid message binding');
                   }
+                  if (multi &&
+                      content['sender_device'] != transport['sender_device']) {
+                    throw StateError('Invalid device binding');
+                  }
                   messages.add(
                     ChatMessage(
                       id: row['client_message_id'],
                       serverId: row['id'],
+                      sequence: row['sequence'],
                       chatId: chat.id,
                       senderId: row['sender_id'],
                       text: content['text'],
                       at: DateTime.parse(row['created_at']),
-                      delivery: Delivery.delivered,
+                      delivery: row['sender_id'] == me!.id
+                          ? Delivery.sent
+                          : Delivery.delivered,
                       kind: content['kind'] ?? 'text',
+                      data: {
+                        for (final entry in Map<String, dynamic>.from(
+                          content['data'] ?? {},
+                        ).entries)
+                          if (!entry.key.startsWith('_'))
+                            entry.key: entry.value,
+                        if (multi) 'origin_device': transport['sender_device'],
+                      },
                     ),
                   );
                   if (content['kind'] == 'receipt') {
@@ -362,7 +592,7 @@ class ChatController extends ChangeNotifier {
                       (m) =>
                           m.chatId == chat.id &&
                           m.senderId == me!.id &&
-                          m.kind == 'text' &&
+                          m.visible &&
                           (receipt['ids'] as List).contains(m.id),
                     )) {
                       final next = Delivery.values.byName(receipt['state']);
@@ -371,25 +601,35 @@ class ChatController extends ChangeNotifier {
                         m.delivery = next;
                       }
                     }
-                  } else if ((content['kind'] ?? 'text') == 'text') {
-                    if (activeChat != chat.id) chat.unread++;
-                    _queueReceipt(
-                      chat.id,
-                      [row['client_message_id'] as String],
-                      activeChat == chat.id && readReceipts
-                          ? 'read'
-                          : 'delivered',
-                    );
-                    if (activeChat == chat.id && readReceipts) {
-                      messages
-                              .firstWhere((m) => m.serverId == row['id'])
-                              .delivery =
-                          Delivery.read;
+                  } else if ([
+                    'text',
+                    'attachment',
+                    'voice',
+                  ].contains(content['kind'] ?? 'text')) {
+                    if (row['sender_id'] != me!.id) {
+                      if (readingChat != chat.id) chat.unread++;
+                      _queueReceipt(
+                        chat.id,
+                        [row['client_message_id'] as String],
+                        readingChat == chat.id && readReceipts
+                            ? 'read'
+                            : 'delivered',
+                      );
+                      if (readingChat == chat.id && readReceipts) {
+                        messages
+                                .firstWhere((m) => m.serverId == row['id'])
+                                .delivery =
+                            Delivery.read;
+                      }
                     }
-                  } else {
+                  } else if (!['control', 'signal'].contains(content['kind'])) {
                     throw StateError('Unsupported event');
                   }
                   await _commit(); // Commit received plaintext + ratchet before advancing cursor or ACK.
+                  final received = messages.firstWhere(
+                    (m) => m.serverId == row['id'],
+                  );
+                  events.add(received);
                 } catch (_) {
                   messages.removeRange(beforeLength, messages.length);
                   chat.unread = unread;
@@ -414,7 +654,8 @@ class ChatController extends ChangeNotifier {
       });
       offline = false;
       _attempt = 0;
-    } catch (_) {
+    } catch (failure, stack) {
+      onSyncError?.call(failure, stack);
       offline = true;
       _attempt = min(_attempt + 1, 6);
       _nextRetry = DateTime.now().add(
@@ -423,10 +664,77 @@ class ChatController extends ChangeNotifier {
     } finally {
       _syncing = false;
       if (!_disposed) notifyListeners();
+      if (_syncAgain && !_disposed && me != null) {
+        _syncAgain = false;
+        unawaited(sync());
+      }
     }
   }
 
-  Future<void> send(Conversation chat, String text) async {
+  Future<void> _uploadPending() async {
+    final owner = me?.id;
+    var jobs = <Map<String, dynamic>>[];
+    await _exclusive(() async {
+      jobs = messages
+          .where(
+            (m) =>
+                m.senderId == owner &&
+                m.delivery == Delivery.queued &&
+                m.data['_upload_path'] != null,
+          )
+          .map(
+            (m) => {
+              'id': m.id,
+              'path': m.data['_upload_path'],
+              'object': m.data['object'],
+            },
+          )
+          .toList();
+    });
+    for (final job in jobs) {
+      if (me?.id != owner || _disposed) return;
+      final file = File(job['path']);
+      try {
+        await _uploader.upload(client!, job['object'], file);
+        var committed = false;
+        await _exclusive(() async {
+          if (me?.id != owner) return;
+          final m = messages.where((m) => m.id == job['id']).firstOrNull;
+          if (m == null ||
+              m.delivery != Delivery.queued ||
+              m.data['_upload_path'] != job['path']) {
+            return;
+          }
+          m.data.remove('_upload_path');
+          await _commit();
+          committed = true;
+        });
+        if (committed) {
+          if (await file.exists()) await file.delete();
+          await sync();
+        }
+      } on StorageException catch (e) {
+        if (!['400', '401', '403', '413'].contains(e.statusCode)) rethrow;
+        await _exclusive(() async {
+          if (me?.id != owner) return;
+          final m = messages.where((m) => m.id == job['id']).firstOrNull;
+          if (m != null) {
+            m.delivery = Delivery.failed;
+            await _commit();
+          }
+        });
+      }
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> send(
+    Conversation chat,
+    String text, {
+    String kind = 'text',
+    Map<String, dynamic>? data,
+    VoidCallback? onCommitted,
+  }) async {
     final body = text.trim();
     final owner = me?.id;
     if (body.isEmpty || body.length > 10000 || blocked.contains(chat.peer.id)) {
@@ -440,16 +748,22 @@ class ChatController extends ChangeNotifier {
           chatId: chat.id,
           senderId: me!.id,
           text: body,
+          kind: kind,
+          data: data,
           at: DateTime.now(),
         ),
       );
-      drafts.remove(chat.id);
+      if (kind == 'text' && drafts[chat.id]?.trim() == body) {
+        drafts.remove(chat.id);
+        _dirtyDrafts.remove(chat.id);
+      }
       try {
         await _commit();
       } catch (_) {
         messages.removeLast();
         rethrow;
       }
+      onCommitted?.call();
       notifyListeners();
     });
     if (!preview) await sync();
@@ -465,6 +779,12 @@ class ChatController extends ChangeNotifier {
         continue;
       }
       try {
+        final uploadPath = m.data['_upload_path'] as String?;
+        if (uploadPath != null) continue;
+        if (deviceId != null) {
+          await _sendToDevices(chat, m);
+          continue;
+        }
         final bundle = Map<String, dynamic>.from(
           await client!.rpc(
             'get_prekey_bundle',
@@ -509,6 +829,7 @@ class ChatController extends ChangeNotifier {
             )
             .timeout(const Duration(seconds: 20));
         m.serverId = result['id'];
+        m.sequence = result['sequence'];
         m.at = DateTime.parse(result['created_at']);
         m.delivery = Delivery.sent;
         await _commit();
@@ -519,6 +840,134 @@ class ChatController extends ChangeNotifier {
         rethrow;
       }
     }
+  }
+
+  Future<void> _sendToDevices(Conversation chat, ChatMessage m) async {
+    if (m.envelope == null) {
+      final devices =
+          await client!.rpc('chat_devices', params: {'chat': chat.id}) as List;
+      if (!devices.any((d) => d['user_id'] == chat.peer.id)) {
+        throw StateError('Kontak belum menyiapkan perangkat.');
+      }
+      final before = jsonEncode(signalStore!.data);
+      try {
+        final copies = <String, dynamic>{};
+        for (final device in devices) {
+          final id = device['id'] as String;
+          if (id == deviceId) continue;
+          final bundle = Map<String, dynamic>.from(
+            await client!.rpc(
+              'device_prekey_bundle',
+              params: {
+                'chat': chat.id,
+                'device': id,
+                'consume': !await signalStore!.containsSession(
+                  SignalProtocolAddress(id, 1),
+                ),
+              },
+            ),
+          );
+          await SignalEngine(signalStore!).establish(id, bundle);
+          copies[id] = await SignalEngine(signalStore!).encrypt(
+            id,
+            jsonEncode({
+              'chat': chat.id,
+              'sender': me!.id,
+              'sender_device': deviceId,
+              'id': m.id,
+              'text': m.text,
+              'kind': m.kind,
+              'data': {
+                for (final entry in m.data.entries)
+                  if (!entry.key.startsWith('_')) entry.key: entry.value,
+              },
+            }),
+          );
+        }
+        m.envelope = {
+          'protocol': 'signal-devices-v2',
+          'sender_device': deviceId,
+          'notify': m.visible,
+          'objects': ['attachment', 'voice'].contains(m.kind)
+              ? [m.data['object']]
+              : [],
+          'envelopes': copies,
+        };
+        await _commit();
+      } catch (_) {
+        signalStore = PersistentSignalStore(
+          Map<String, dynamic>.from(jsonDecode(before)),
+        );
+        m.envelope = null;
+        rethrow;
+      }
+    }
+    final result = await client!
+        .rpc(
+          'send_device_message',
+          params: {'chat': chat.id, 'client_id': m.id, 'envelope': m.envelope},
+        )
+        .timeout(const Duration(seconds: 20));
+    m.serverId = result['id'];
+    m.sequence = result['sequence'];
+    m.at = DateTime.parse(result['created_at']);
+    m.delivery = Delivery.sent;
+    await _commit();
+  }
+
+  Future<void> control(
+    Conversation chat,
+    ChatMessage message,
+    String op, {
+    String? value,
+  }) async {
+    if (['edit', 'delete'].contains(op) && message.senderId != me!.id) {
+      throw StateError('Hanya pemilik pesan.');
+    }
+    if (op == 'edit' &&
+        (value == null || value.trim().isEmpty || value.length > 10000)) {
+      return;
+    }
+    await send(
+      chat,
+      'Perubahan pesan',
+      kind: 'control',
+      data: {
+        'op': op,
+        'target': message.id,
+        if (op == 'edit') 'text': value,
+        if (op == 'reaction') 'emoji': value ?? '',
+      },
+    );
+  }
+
+  Future<void> hideMessage(String id) async {
+    await _exclusive(() async {
+      hidden.add(id);
+      await _commit();
+    });
+    notifyListeners();
+  }
+
+  Future<void> retryMessage(String id) async {
+    await _exclusive(() async {
+      messages.firstWhere((m) => m.id == id).delivery = Delivery.queued;
+      await _commit();
+    });
+    await sync();
+  }
+
+  Future<void> cancelQueued(String id) async {
+    await _exclusive(() async {
+      final m = messages.firstWhere((m) => m.id == id);
+      if (m.serverId != null || m.delivery != Delivery.queued) return;
+      m.delivery = Delivery.failed;
+      m.data['_cancelled'] = true;
+      final path = m.data.remove('_upload_path') as String?;
+      await _commit();
+      if (path != null && await File(path).exists()) await File(path).delete();
+    });
+    notifyListeners();
   }
 
   void _queueReceipt(String chat, List<String> ids, String state) {
@@ -535,15 +984,23 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> markRead(Conversation chat) async {
-    chat.unread = 0;
-    if (preview || !readReceipts) return;
+    if (preview) {
+      chat.unread = 0;
+      notifyListeners();
+      return;
+    }
     await _exclusive(() async {
+      chat.unread = 0;
+      if (!readReceipts) {
+        await _commit();
+        return;
+      }
       final unread = messages
           .where(
             (m) =>
                 m.chatId == chat.id &&
                 m.senderId == chat.peer.id &&
-                m.kind == 'text' &&
+                m.visible &&
                 m.delivery != Delivery.read,
           )
           .toList();
@@ -607,6 +1064,7 @@ class ChatController extends ChangeNotifier {
       bio: bio.trim(),
       role: me!.role,
       status: me!.status,
+      avatarPath: me!.avatarPath,
     );
     await persist();
     notifyListeners();
@@ -619,19 +1077,105 @@ class ChatController extends ChangeNotifier {
         'blocked_id': peer.id,
       });
     }
-    blocked.add(peer.id);
+    await _exclusive(() async {
+      blocked.add(peer.id);
+      await _commit();
+    });
+    notifyListeners();
+  }
+
+  Future<void> unblock(String id) async {
+    if (!preview) {
+      await client!
+          .from('blocked_users')
+          .delete()
+          .eq('blocker_id', me!.id)
+          .eq('blocked_id', id);
+    }
+    await _exclusive(() async {
+      blocked.remove(id);
+      await _commit();
+    });
+    notifyListeners();
+  }
+
+  Future<void> setAvatar(String? path) async {
+    if (!preview) {
+      await client!
+          .from('profiles')
+          .update({'avatar_path': path})
+          .eq('id', me!.id);
+    }
+    me = Person.fromJson({...me!.toJson(), 'avatar_path': path});
     await persist();
     notifyListeners();
   }
 
+  Future<void> setReadReceipts(bool enabled) async {
+    await _exclusive(() async {
+      readReceipts = enabled;
+      await _commit();
+    });
+    notifyListeners();
+  }
+
+  Future<void> setScreenProtection(bool enabled) async {
+    await _exclusive(() async {
+      protectScreen = enabled;
+      await _commit();
+    });
+    if (vault is DeviceVault && !background) {
+      await DeviceRuntime.protectScreen(enabled);
+    }
+    notifyListeners();
+  }
+
+  Future<void> toggleChatPreference(
+    Conversation chat, {
+    required bool pin,
+  }) async {
+    await _exclusive(() async {
+      if (pin) {
+        chat.pinned = !chat.pinned;
+      } else {
+        chat.muted = !chat.muted;
+      }
+      await _commit();
+    });
+    notifyListeners();
+  }
+
+  Future<void> changePassword(
+    String password, {
+    String? currentPassword,
+  }) async {
+    if (password.length < 12) throw StateError('Gunakan minimal 12 karakter.');
+    final result = await client!.functions.invoke(
+      'account-password',
+      body: {'new_password': password, 'current_password': ?currentPassword},
+    );
+    if (result.data['ok'] != true) {
+      throw StateError('Password belum dapat diganti.');
+    }
+    if (passwordResetRequired) {
+      passwordResetRequired = false;
+      await _openAccount();
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
+    _uploader.cancel();
     await _serial;
-    await PushService.stop();
+    await PushService.stop(controller: this);
     if (!preview) {
       await persist();
       await client?.auth.signOut(scope: SignOutScope.local);
     }
     _clear();
+    if (vault is DeviceVault && !background) {
+      await DeviceRuntime.protectScreen(false);
+    }
     notifyListeners();
   }
 
@@ -643,6 +1187,8 @@ class ChatController extends ChangeNotifier {
       _channel = null;
     }
     me = null;
+    passwordResetRequired = false;
+    protectScreen = false;
     preview = false;
     chats.clear();
     messages.clear();
@@ -650,8 +1196,14 @@ class ChatController extends ChangeNotifier {
     cursors.clear();
     blocked.clear();
     signalStore = null;
+    deviceId = null;
+    _revision = 0;
+    hidden.clear();
+    _dirtyDrafts.clear();
     offline = false;
     _attempt = 0;
+    _syncAgain = false;
+    _uploadRetry = DateTime(2000);
     error = null;
     activeChat = null;
   }
@@ -724,9 +1276,12 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _uploader.cancel();
+    if (_observing) WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _draftTimer?.cancel();
     _auth?.cancel();
+    events.close();
     if (_channel != null) client?.removeChannel(_channel!);
     super.dispose();
   }
