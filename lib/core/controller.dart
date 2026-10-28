@@ -276,7 +276,7 @@ class ChatController extends ChangeNotifier {
             .rpc('my_account')
             .timeout(const Duration(seconds: 15));
         if (current['status'] != 'active') {
-          await client!.auth.signOut();
+          await client!.auth.signOut(scope: SignOutScope.local);
           _clear();
           return;
         }
@@ -629,7 +629,7 @@ class ChatController extends ChangeNotifier {
     await PushService.stop();
     if (!preview) {
       await persist();
-      await client?.auth.signOut();
+      await client?.auth.signOut(scope: SignOutScope.local);
     }
     _clear();
     notifyListeners();

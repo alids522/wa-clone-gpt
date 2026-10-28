@@ -16,7 +16,7 @@ Deno.serve(async request => {
     const stepUp = clients().auth;
     const verification = await stepUp.auth.signInWithPassword({ email: user.email!, password: input.password });
     if (verification.error || verification.data.user?.id !== user.id) return json({ error: 'Reauthentication required' }, 403);
-    await stepUp.auth.signOut();
+    await stepUp.auth.signOut({ scope: 'local' });
     const code = input.action === 'create-invite' ? Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join('') : null;
     const result = await service.rpc('adoetz_admin_action', { actor: user.id, target: input.target ?? null, operation: input.action, reason: input.reason.trim(), request_id: input.request_id ?? crypto.randomUUID(), invite_hash: code ? await hash(code) : null });
     if (result.error) return json({ error: 'Action rejected' }, 403);
